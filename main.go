@@ -22,6 +22,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/gopro"
 	"github.com/AlexxIT/go2rtc/internal/hass"
 	"github.com/AlexxIT/go2rtc/internal/hls"
+	"github.com/AlexxIT/go2rtc/internal/inference"
 	"github.com/AlexxIT/go2rtc/internal/homekit"
 	"github.com/AlexxIT/go2rtc/internal/http"
 	"github.com/AlexxIT/go2rtc/internal/isapi"
@@ -117,6 +118,7 @@ func main() {
 		{"offline", offline.Init},
 		{"storage", storage.Init},
 		{"events", events.Init},
+		{"inference", inference.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
