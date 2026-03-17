@@ -14,6 +14,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/dvrip"
 	"github.com/AlexxIT/go2rtc/internal/echo"
 	"github.com/AlexxIT/go2rtc/internal/eseecloud"
+	"github.com/AlexxIT/go2rtc/internal/events"
 	"github.com/AlexxIT/go2rtc/internal/exec"
 	"github.com/AlexxIT/go2rtc/internal/expr"
 	"github.com/AlexxIT/go2rtc/internal/ffmpeg"
@@ -115,6 +116,7 @@ func main() {
 		{"camera", camera.Init},
 		{"offline", offline.Init},
 		{"storage", storage.Init},
+		{"events", events.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
