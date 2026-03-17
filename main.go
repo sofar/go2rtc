@@ -40,6 +40,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/rtmp"
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/srtp"
+	"github.com/AlexxIT/go2rtc/internal/storage"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/internal/tapo"
 	"github.com/AlexxIT/go2rtc/internal/tuya"
@@ -113,6 +114,7 @@ func main() {
 		// Camera management (after all source handlers are registered)
 		{"camera", camera.Init},
 		{"offline", offline.Init},
+		{"storage", storage.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
