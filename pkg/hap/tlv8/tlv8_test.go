@@ -82,7 +82,9 @@ func TestVideoCodecParams(t *testing.T) {
 	dst, err := Marshal(v)
 	require.Nil(t, err)
 
-	require.Equal(t, src, dst)
+	// Marshal normalizes separator from 0x00 to 0xFF
+	expect, _ := hex.DecodeString("010101020100ff00020102030100040100")
+	require.Equal(t, expect, dst)
 }
 
 func TestInterface(t *testing.T) {

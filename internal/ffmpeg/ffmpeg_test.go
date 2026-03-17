@@ -31,7 +31,7 @@ func TestParseArgsFile(t *testing.T) {
 		{
 			name:   "[FILE] video will be transcoded to H265 and rotate 270º, audio will be skipped",
 			source: "/media/bbb.mp4#video=h265#rotate=-90",
-			expect: `ffmpeg -hide_banner -re -i /media/bbb.mp4 -c:v libx265 -g 50 -profile:v main -level:v 5.1 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -vf "transpose=2" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -re -i /media/bbb.mp4 -c:v libx265 -g 50 -profile:v main -x265-params level=5.1:high-tier=0 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -vf "transpose=2" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[FILE] video will be output for MJPEG to pipe, audio will be skipped",
@@ -61,17 +61,17 @@ func TestParseArgsDevice(t *testing.T) {
 		{
 			name:   "[DEVICE] video will be output for MJPEG to pipe, with size 1920x1080",
 			source: "device?video=0&video_size=1920x1080",
-			expect: `ffmpeg -hide_banner -f dshow -video_size 1920x1080 -i "video=0" -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -f v4l2 -video_size 1920x1080 -i 0 -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[DEVICE] video will be transcoded to H265 with framerate 20, audio will be skipped",
 			source: "device?video=0&framerate=20#video=h265",
-			expect: `ffmpeg -hide_banner -f dshow -framerate 20 -i "video=0" -c:v libx265 -g 50 -profile:v main -level:v 5.1 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -f v4l2 -framerate 20 -i 0 -c:v libx265 -g 50 -profile:v main -x265-params level=5.1:high-tier=0 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[DEVICE] video/audio",
 			source: "device?video=FaceTime HD Camera&audio=Microphone (High Definition Audio Device)",
-			expect: `ffmpeg -hide_banner -f dshow -i "video=FaceTime HD Camera:audio=Microphone (High Definition Audio Device)" -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -f v4l2 -i FaceTime HD Camera -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 	}
 	for _, test := range tests {
@@ -111,7 +111,7 @@ func TestParseArgsIpCam(t *testing.T) {
 		{
 			name:   "[RTSP] video with resize to 1280x720, should be transcoded, so select H265",
 			source: "rtsp://example.com#video=h265#width=1280#height=720",
-			expect: `ffmpeg -hide_banner -allowed_media_types video -fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg -rtsp_flags prefer_tcp -i rtsp://example.com -c:v libx265 -g 50 -profile:v main -level:v 5.1 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -vf "scale=1280:720" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -allowed_media_types video -fflags nobuffer -flags low_delay -timeout 5000000 -user_agent go2rtc/ffmpeg -rtsp_flags prefer_tcp -i rtsp://example.com -c:v libx265 -g 50 -profile:v main -x265-params level=5.1:high-tier=0 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -vf "scale=1280:720" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[RTSP] video will be copied, changing RTSP transport from TCP to UDP+TCP",
@@ -226,7 +226,7 @@ func TestParseArgsHwVaapi(t *testing.T) {
 		{
 			name:   "[DEVICE] MJPEG video with size 1920x1080 will be transcoded to H265",
 			source: "device?video=0&video_size=1920x1080#video=h265#hardware=vaapi",
-			expect: `ffmpeg -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch -f dshow -video_size 1920x1080 -i "video=0" -c:v hevc_vaapi -g 50 -bf 0 -profile:v main -level:v 5.1 -sei:v 0 -an -vf "format=vaapi|nv12,hwupload" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			expect: `ffmpeg -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch -f v4l2 -video_size 1920x1080 -i 0 -c:v hevc_vaapi -g 50 -bf 0 -profile:v main -level:v 5.1 -sei:v 0 -an -vf "format=vaapi|nv12,hwupload" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 	}
 	for _, test := range tests {
