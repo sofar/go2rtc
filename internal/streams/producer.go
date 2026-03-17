@@ -173,6 +173,15 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 	p.reconnect(workerID, 0)
 }
 
+// ProducerStateChange is fired via Listener when a producer goes offline
+// or comes back online during reconnect. Retry is the reconnect attempt
+// number (0 on first disconnect, -1 on successful reconnect).
+type ProducerStateChange struct {
+	URL   string
+	Retry int
+	Err   error
+}
+
 func (p *Producer) reconnect(workerID, retry int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -187,6 +196,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	conn, err := GetProducer(p.url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
+		p.Fire(ProducerStateChange{URL: p.url, Retry: retry, Err: err})
 
 		timeout := time.Minute
 		if retry < 5 {
@@ -238,6 +248,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	_ = p.conn.Stop()
 	// swap connections
 	p.conn = conn
+	p.Fire(ProducerStateChange{URL: p.url, Retry: -1})
 
 	go p.worker(conn, workerID)
 }

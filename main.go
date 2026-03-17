@@ -31,6 +31,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/mpeg"
 	"github.com/AlexxIT/go2rtc/internal/multitrans"
 	"github.com/AlexxIT/go2rtc/internal/nest"
+	"github.com/AlexxIT/go2rtc/internal/offline"
 	"github.com/AlexxIT/go2rtc/internal/ngrok"
 	"github.com/AlexxIT/go2rtc/internal/onvif"
 	"github.com/AlexxIT/go2rtc/internal/pinggy"
@@ -111,6 +112,7 @@ func main() {
 		{"yandex", yandex.Init},
 		// Camera management (after all source handlers are registered)
 		{"camera", camera.Init},
+		{"offline", offline.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},

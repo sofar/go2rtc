@@ -118,6 +118,16 @@ producers:
 	s.mu.Unlock()
 }
 
+// Listen registers an event listener on all producers in the stream.
+// Events include ProducerStateChange for reconnect lifecycle.
+func (s *Stream) Listen(f core.EventFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, prod := range s.producers {
+		prod.Listen(f)
+	}
+}
+
 func (s *Stream) MarshalJSON() ([]byte, error) {
 	var info = struct {
 		Producers []*Producer     `json:"producers"`
