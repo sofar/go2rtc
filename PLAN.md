@@ -336,16 +336,22 @@ storage:
 ## Implementation Order
 
 1. **`internal/camera`** — config parsing, stream registration, API
-2. **`internal/offline`** — placeholder frame injection
+2. **`internal/offline`** — placeholder frame injection (uses existing
+   `Listener`/`Fire` pattern for producer state, no bus needed)
 3. **`internal/storage`** — segment writer, retention, playback API
-4. **`internal/inference`** — frame sampling, exec backend first, then onnx
-5. **`internal/events`** — event bus, MQTT, webhooks
-6. **`internal/viewgroup`** — correlation engine
+4. **`internal/events`** — event bus, MQTT, webhooks. Introduced here
+   because inference (step 5) is the first module that needs to fan out
+   notifications to multiple independent consumers (storage for
+   event-triggered recording, webhooks, MQTT, viewgroup). Prior modules
+   use direct calls or the existing `Listener` pattern.
+5. **`internal/inference`** — frame sampling, exec backend first, then
+   onnx. Publishes `DetectionEvent` to the event bus.
+6. **`internal/viewgroup`** — correlation engine (subscribes to bus)
 7. Snapshot & transcode profile enhancements
 
 Each phase is independently useful. Phase 1-2 gives you a better camera
-manager. Add phase 3 and you have a recorder. Phase 4-5 adds intelligence.
-Phase 6-7 is the novel multi-angle layer.
+manager. Add phase 3 and you have a recorder. Phase 4-5 adds the event
+bus and intelligence. Phase 6-7 is the novel multi-angle layer.
 
 ## Open Questions
 
