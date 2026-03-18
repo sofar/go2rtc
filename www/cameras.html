@@ -43,6 +43,27 @@
         .cam-card .links a {
             margin-right: 10px;
         }
+        .cam-card .detections {
+            padding: 4px 12px 6px;
+            font-size: 12px;
+            min-height: 18px;
+        }
+        .det-tag {
+            display: inline-block;
+            padding: 1px 8px;
+            margin: 1px 3px 1px 0;
+            border-radius: 10px;
+            font-weight: bold;
+            color: white;
+            background: #e67e22;
+        }
+        .det-tag.person { background: #e74c3c; }
+        .det-tag.car { background: #3498db; }
+        .det-tag.dog { background: #8e44ad; }
+        .det-tag.cat { background: #27ae60; }
+        .det-tag.bird { background: #16a085; }
+        .det-tag.truck { background: #2c3e50; }
+        .det-none { color: #bbb; font-style: italic; }
     </style>
 </head>
 <body>
@@ -62,13 +83,31 @@
     let cameras = [];
     let statuses = {};
 
+    let detections = {};  // {camera: {class: count}}
+
     async function loadCameras() {
-        const [camRes, statusRes] = await Promise.all([
+        const [camRes, statusRes, eventsRes] = await Promise.all([
             fetch('api/cameras', {cache: 'no-cache'}),
-            fetch('api/cameras/status', {cache: 'no-cache'})
+            fetch('api/cameras/status', {cache: 'no-cache'}),
+            fetch('api/events?type=detection', {cache: 'no-cache'})
         ]);
         cameras = await camRes.json();
         statuses = await statusRes.json();
+
+        // Aggregate detections per camera from recent events
+        const events = await eventsRes.json();
+        detections = {};
+        const cutoff = Date.now() - 30000; // last 30 seconds
+        events.forEach(ev => {
+            if (!ev.data || !ev.data.detections) return;
+            if (new Date(ev.timestamp).getTime() < cutoff) return;
+            const cam = ev.camera;
+            if (!detections[cam]) detections[cam] = {};
+            ev.data.detections.forEach(d => {
+                detections[cam][d.class] = (detections[cam][d.class] || 0) + 1;
+            });
+        });
+
         render();
     }
 
@@ -92,6 +131,7 @@
                 card.dataset.name = name;
                 card.innerHTML = `
                     <img>
+                    <div class="detections"></div>
                     <div class="info">
                         <h3></h3>
                         <div class="meta"></div>
@@ -120,6 +160,19 @@
             card.querySelector('.meta').innerHTML =
                 `<span class="${statusClass}">${statusText}</span>` +
                 (meta.length ? ' &middot; ' + meta.join(' &middot; ') : '');
+
+            // Render recent detections
+            const camDets = detections[name];
+            const detsDiv = card.querySelector('.detections');
+            if (camDets && Object.keys(camDets).length > 0) {
+                detsDiv.innerHTML = Object.entries(camDets)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([cls, count]) =>
+                        `<span class="det-tag ${cls}">${cls} ${count}</span>`
+                    ).join('');
+            } else {
+                detsDiv.innerHTML = '<span class="det-none">no detections</span>';
+            }
 
             card.querySelector('.links').innerHTML =
                 `<a href="stream.html?src=${src}">stream</a>` +
