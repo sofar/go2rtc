@@ -2,6 +2,7 @@ package inference
 
 import (
 	"bytes"
+	"image"
 	"image/jpeg"
 	"time"
 
@@ -72,18 +73,104 @@ func (s *Sampler) run() {
 }
 
 func (s *Sampler) sample() {
-	jpeg, imgW, imgH := s.captureFrame()
-	if jpeg == nil {
+	fullJPEG, _, _ := s.captureFrame()
+	if fullJPEG == nil {
 		return
 	}
 
-	detections, err := s.backend.Detect(jpeg)
+	if len(s.regions) > 0 {
+		// Per-region inference: crop each region from the native frame,
+		// run detection on the crop. The object fills the model input
+		// properly instead of being a tiny part of the full frame.
+		s.sampleRegions(fullJPEG)
+	} else {
+		s.sampleFullFrame(fullJPEG)
+	}
+}
+
+func (s *Sampler) sampleFullFrame(jpegData []byte) {
+	detections, err := s.backend.Detect(jpegData)
 	if err != nil {
 		log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] detect")
 		return
 	}
 
-	// Filter by confidence threshold (per-class overrides global)
+	filtered := s.filterByConfidence(detections)
+	if len(filtered) > 0 {
+		s.publish("", filtered, jpegData)
+	}
+}
+
+func (s *Sampler) sampleRegions(fullJPEG []byte) {
+	// Decode the full frame once
+	img, err := jpeg.Decode(bytes.NewReader(fullJPEG))
+	if err != nil {
+		return
+	}
+
+	for regionName, region := range s.regions {
+		if len(region.Polygon) < 3 {
+			continue
+		}
+
+		// Crop to region bounding box
+		bounds := polygonBounds(region.Polygon)
+		cropped := cropImage(img, bounds)
+		if cropped == nil {
+			continue
+		}
+
+		// Encode crop as JPEG for the backend
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, cropped, &jpeg.Options{Quality: 85}); err != nil {
+			continue
+		}
+		cropJPEG := buf.Bytes()
+
+		// Run detection on the crop
+		detections, err := s.backend.Detect(cropJPEG)
+		if err != nil {
+			log.Debug().Err(err).Str("camera", s.camera).Str("region", regionName).Msg("[inference] detect")
+			continue
+		}
+
+		// Filter by confidence and class
+		var regionDets []Detection
+		for _, d := range detections {
+			threshold := s.minConf
+			if ct, ok := s.classThreshold[d.Class]; ok {
+				threshold = ct
+			}
+			if d.Confidence < threshold {
+				continue
+			}
+			// Check class matches region's detect list
+			classMatch := false
+			for _, cls := range region.Detect {
+				if cls == d.Class {
+					classMatch = true
+					break
+				}
+			}
+			if !classMatch {
+				continue
+			}
+
+			// Remap bbox from crop coordinates back to full frame
+			// normalized coordinates
+			imgW := img.Bounds().Dx()
+			imgH := img.Bounds().Dy()
+			d.BBox = remapBBox(d.BBox, bounds, imgW, imgH)
+			regionDets = append(regionDets, d)
+		}
+
+		if len(regionDets) > 0 {
+			s.publish(regionName, regionDets, fullJPEG)
+		}
+	}
+}
+
+func (s *Sampler) filterByConfidence(detections []Detection) []Detection {
 	var filtered []Detection
 	for _, d := range detections {
 		threshold := s.minConf
@@ -94,28 +181,7 @@ func (s *Sampler) sample() {
 			filtered = append(filtered, d)
 		}
 	}
-
-	if len(filtered) == 0 {
-		return
-	}
-
-	// If regions are configured, filter detections by region and class.
-	// Otherwise emit all detections under a single event.
-	if len(s.regions) > 0 {
-		for regionName, region := range s.regions {
-			var regionDets []Detection
-			for _, d := range filtered {
-				if matchesRegion(d, region, imgW, imgH) {
-					regionDets = append(regionDets, d)
-				}
-			}
-			if len(regionDets) > 0 {
-				s.publish(regionName, regionDets, jpeg)
-			}
-		}
-	} else {
-		s.publish("", filtered, jpeg)
-	}
+	return filtered
 }
 
 func (s *Sampler) publish(region string, dets []Detection, jpeg []byte) {
@@ -198,6 +264,58 @@ func jpegDimensions(data []byte) (int, int) {
 		return 0, 0
 	}
 	return cfg.Width, cfg.Height
+}
+
+// polygonBounds returns the bounding rectangle of a polygon.
+func polygonBounds(polygon [][2]int) image.Rectangle {
+	if len(polygon) == 0 {
+		return image.Rectangle{}
+	}
+	minX, minY := polygon[0][0], polygon[0][1]
+	maxX, maxY := minX, minY
+	for _, p := range polygon[1:] {
+		if p[0] < minX { minX = p[0] }
+		if p[0] > maxX { maxX = p[0] }
+		if p[1] < minY { minY = p[1] }
+		if p[1] > maxY { maxY = p[1] }
+	}
+	return image.Rect(minX, minY, maxX, maxY)
+}
+
+// cropImage extracts a rectangular region from an image.
+func cropImage(img image.Image, bounds image.Rectangle) image.Image {
+	// Clamp to image bounds
+	imgBounds := img.Bounds()
+	bounds = bounds.Intersect(imgBounds)
+	if bounds.Empty() {
+		return nil
+	}
+
+	type subImager interface {
+		SubImage(r image.Rectangle) image.Image
+	}
+	if si, ok := img.(subImager); ok {
+		return si.SubImage(bounds)
+	}
+	return nil
+}
+
+// remapBBox converts a bbox from crop-local normalized coordinates to
+// full-frame normalized coordinates.
+func remapBBox(bbox [4]float32, cropBounds image.Rectangle, imgW, imgH int) [4]float32 {
+	cx := float64(cropBounds.Min.X)
+	cy := float64(cropBounds.Min.Y)
+	cw := float64(cropBounds.Dx())
+	ch := float64(cropBounds.Dy())
+	fw := float64(imgW)
+	fh := float64(imgH)
+
+	return [4]float32{
+		float32((cx + float64(bbox[0])*cw) / fw),
+		float32((cy + float64(bbox[1])*ch) / fh),
+		float32((cx + float64(bbox[2])*cw) / fw),
+		float32((cy + float64(bbox[3])*ch) / fh),
+	}
 }
 
 // matchesRegion checks if a detection's class is in the region's detect

@@ -14,7 +14,6 @@ import (
 	"math"
 	"os"
 	"sort"
-	"strings"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
@@ -40,25 +39,22 @@ type Backend struct {
 
 // New creates an ONNX Runtime backend for a YOLOv8 model.
 // device can be "cpu" or "openvino".
-func New(modelPath string, device string, nmsThreshold float32) (*Backend, error) {
+// New creates an ONNX Runtime backend. inputSize is the model's input
+// resolution (e.g. 640 for a 640x640 model). Pass 0 for default (640).
+func New(modelPath string, device string, nmsThreshold float32, inputSize int) (*Backend, error) {
 	if nmsThreshold <= 0 {
 		nmsThreshold = 0.45
 	}
+	if inputSize <= 0 {
+		inputSize = 640
+	}
 
-	// Initialize ONNX Runtime (safe to call multiple times)
 	ort.SetSharedLibraryPath(findOrtLib())
 	if err := ort.InitializeEnvironment(); err != nil {
 		return nil, fmt.Errorf("onnxbe: init environment: %w", err)
 	}
 
-	// Detect input size from model file by doing a quick load+query.
-	// Use a temporary session to read the input shape, then create
-	// the real session with correct tensor sizes.
-	inSize, err := probeModelInputSize(modelPath)
-	if err != nil || inSize <= 0 {
-		inSize = 640
-	}
-
+	inSize := inputSize
 	// YOLOv8 anchor count: (s/8)^2 + (s/16)^2 + (s/32)^2
 	numAnch := (inSize/8)*(inSize/8) + (inSize/16)*(inSize/16) + (inSize/32)*(inSize/32)
 
@@ -320,63 +316,6 @@ func clamp(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
-}
-
-// probeModelInputSize reads an ONNX model file and extracts the input
-// image size from the model's input shape metadata. Returns 0 on failure.
-func probeModelInputSize(modelPath string) (int, error) {
-	// ONNX models store input shapes in the protobuf header.
-	// Rather than parsing protobuf, use a simple heuristic:
-	// create a test session with 640x640, and if the model expects
-	// a different size, the output anchor count won't match.
-	// For now, detect common sizes from the filename.
-	lower := strings.ToLower(modelPath)
-	for _, size := range []int{1280, 1024, 960, 896, 832, 768, 704, 640, 512, 448, 416, 384, 352, 320} {
-		if strings.Contains(lower, fmt.Sprintf("%d", size)) {
-			return size, nil
-		}
-	}
-
-	// Try to detect from file: read first few KB and look for dimension values
-	data, err := os.ReadFile(modelPath)
-	if err != nil {
-		return 0, err
-	}
-
-	// Search for the pattern: input tensor dimensions are stored as
-	// varint-encoded int64 values in the protobuf. Common sizes:
-	// 640=0x80 0x05, 1024=0x80 0x08
-	// Look for repeated dimension pattern (H and W are same for square input)
-	for _, size := range []int{1024, 960, 896, 832, 768, 704, 640} {
-		// Protobuf varint encoding for these sizes
-		var encoded []byte
-		v := size
-		for v >= 0x80 {
-			encoded = append(encoded, byte(v)|0x80)
-			v >>= 7
-		}
-		encoded = append(encoded, byte(v))
-
-		// If we find this varint at least twice close together, it's likely H,W
-		count := 0
-		for i := 0; i <= len(data)-len(encoded); i++ {
-			match := true
-			for j := range encoded {
-				if data[i+j] != encoded[j] {
-					match = false
-					break
-				}
-			}
-			if match {
-				count++
-			}
-		}
-		if count >= 2 {
-			return size, nil
-		}
-	}
-
-	return 0, fmt.Errorf("could not detect input size")
 }
 
 func findOrtLib() string {

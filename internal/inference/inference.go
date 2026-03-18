@@ -35,8 +35,9 @@ type Config struct {
 
 	// ONNX backend config
 	Model        string  `yaml:"model"`
-	Device       string  `yaml:"device"`        // "cpu" or "openvino"
-	NMSThreshold float32 `yaml:"nms_threshold"` // default 0.45
+	Device       string  `yaml:"device"`         // "cpu" or "openvino"
+	InputSize    int     `yaml:"input_size"`      // model input size, default 640
+	NMSThreshold float32 `yaml:"nms_threshold"`   // default 0.45
 }
 
 var samplers []*Sampler
@@ -108,7 +109,7 @@ func createBackend(cfg Config) (Backend, error) {
 		if cfg.Model == "" {
 			return nil, fmt.Errorf("inference: onnx backend requires model path")
 		}
-		return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold)
+		return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold, cfg.InputSize)
 	case "http":
 		if cfg.URL == "" {
 			return nil, nil
@@ -118,7 +119,7 @@ func createBackend(cfg Config) (Backend, error) {
 	case "":
 		// Auto-detect: if model is set, use onnx; if url is set, use http
 		if cfg.Model != "" {
-			return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold)
+			return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold, cfg.InputSize)
 		}
 		if cfg.URL != "" {
 			timeout, _ := time.ParseDuration(cfg.Timeout)
@@ -136,8 +137,8 @@ type onnxWrapper struct {
 	backend *onnxbe.Backend
 }
 
-func newOnnxWrapper(model, device string, nmsThreshold float32) (*onnxWrapper, error) {
-	b, err := onnxbe.New(model, device, nmsThreshold)
+func newOnnxWrapper(model, device string, nmsThreshold float32, inputSize int) (*onnxWrapper, error) {
+	b, err := onnxbe.New(model, device, nmsThreshold, inputSize)
 	if err != nil {
 		return nil, err
 	}
