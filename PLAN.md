@@ -20,11 +20,11 @@ keeping upstream compatibility intact.
 
 Snapshot caching already exists in `internal/mjpeg` with a `?cache=<duration>` parameter.
 
-## New Modules to Implement
+## New Modules ✅
 
-### Phase 1: Core Infrastructure
+### Phase 1: Core Infrastructure ✅
 
-#### `internal/camera` — Camera Configuration Layer
+#### `internal/camera` — Camera Configuration Layer ✅
 **Purpose:** Extend go2rtc's flat `streams:` config with camera-specific
 metadata: friendly name, credentials, regions of interest, view group
 membership, recording settings, transcode profiles.
@@ -60,7 +60,7 @@ chains.
 
 ---
 
-#### `internal/offline` — Offline Placeholder Frame Injection
+#### `internal/offline` — Offline Placeholder Frame Injection ✅
 **Purpose:** When a producer enters disconnected state, inject a synthetic
 JPEG/H264 frame into the stream so consumers see a "Camera Offline" image
 with camera name, last-seen timestamp, and error reason instead of a
@@ -87,9 +87,9 @@ Recommend option 1 for initial implementation.
 
 ---
 
-### Phase 2: Recording & Storage
+### Phase 2: Recording & Storage ✅
 
-#### `internal/storage` — Segmented Recording
+#### `internal/storage` — Segmented Recording ✅
 **Purpose:** Record camera streams to disk in segments with configurable
 codec, bitrate, and retention.
 
@@ -113,9 +113,9 @@ codec, bitrate, and retention.
 
 ---
 
-### Phase 3: Object Detection
+### Phase 3: Object Detection ✅
 
-#### `internal/inference` — Detection Pipeline
+#### `internal/inference` — Detection Pipeline ✅
 **Purpose:** Sample frames from camera streams, crop to regions of
 interest, run object detection, emit events.
 
@@ -180,24 +180,24 @@ type DetectionEvent struct {
 
 ---
 
-#### `internal/events` — Event Bus & Export
+#### `internal/events` — Event Bus & Export (partial ✅)
 **Purpose:** Central event system for detection events, camera state
 changes, and recording triggers.
 
 **Consumers:**
-- MQTT publish (go2rtc already has `pkg/mqtt`)
-- Webhook (HTTP POST to configured URLs)
+- MQTT publish (go2rtc already has `pkg/mqtt`) — **deferred**
+- Webhook (HTTP POST to configured URLs) — **deferred**
 - Internal subscribers (storage module for event-triggered recording,
-  viewgroup module for correlation)
+  viewgroup module for correlation) ✅
 - API: `GET api/events?camera=<name>&from=<ts>&to=<ts>` — query recent
-  events
-- WebSocket: `ws://host/api/ws?type=events` — live event stream
+  events ✅
+- WebSocket: `ws://host/api/ws?type=events` — live event stream ✅
 
 ---
 
-### Phase 4: Multi-Angle Awareness
+### Phase 4: Multi-Angle Awareness ✅
 
-#### `internal/viewgroup` — Cross-Camera Correlation
+#### `internal/viewgroup` — Cross-Camera Correlation ✅
 **Purpose:** Group cameras that view the same physical area from different
 angles. Correlate detections across cameras to reduce false positives,
 deduplicate alerts, and provide multi-view context.
@@ -229,32 +229,33 @@ view_groups:
 
 ---
 
-### Phase 5: Enhanced Snapshots & Transcode Profiles
+### Phase 5: Enhanced Snapshots & Transcode Profiles ✅
 
-#### Snapshot Enhancements (extend `internal/mjpeg`)
-- `GET api/frame.jpeg?src=<cam>&region=<name>` — cropped to named ROI
-- `GET api/frame.jpeg?src=<cam>&annotate=true` — overlay detection boxes
-- Dedicated `/api/snapshot/<camera>` alias for cleaner URLs
+#### Snapshot Enhancements (`internal/snapshot`) ✅
+- `GET /api/snapshot/<camera>` — clean URL alias ✅
+- `GET /api/snapshot/<camera>?region=<name>` — cropped to named ROI ✅
+- `GET /api/snapshot/<camera>?annotate=true` — overlay detection boxes ✅
 
-#### Transcode Profiles (extend `internal/camera` + `internal/ffmpeg`)
-- Register per-camera transcode profiles as virtual streams
-- `rtsp://host:8554/front_porch/low` → transcoded low-quality stream
-- `rtsp://host:8554/front_porch/high` → transcoded high-quality stream
-- `rtsp://host:8554/front_porch` → passthrough (original)
-- On-demand: transcode pipeline only starts when a consumer connects
+#### Transcode Profiles (extend `internal/camera` + `internal/ffmpeg`) ✅
+- Register per-camera transcode profiles as virtual streams ✅
+- `rtsp://host:8554/front_porch/low` → transcoded low-quality stream ✅
+- `rtsp://host:8554/front_porch/high` → transcoded high-quality stream ✅
+- `rtsp://host:8554/front_porch` → passthrough (original) ✅
+- On-demand: transcode pipeline only starts when a consumer connects ✅
 
 ---
 
-## Module Registration (main.go additions)
+## Module Registration (main.go) ✅
 
 ```go
-// After existing modules, before helper modules:
+// After all source handlers, before helper modules:
 {"camera", camera.Init},       // camera config layer
 {"offline", offline.Init},     // offline placeholder injection
 {"storage", storage.Init},     // segmented recording
+{"events", events.Init},       // event bus
 {"inference", inference.Init}, // object detection pipeline
-{"events", events.Init},       // event bus and export
 {"viewgroup", viewgroup.Init}, // multi-angle correlation
+{"snapshot", snapshot.Init},   // enhanced snapshots
 ```
 
 ## Configuration Schema (full example)
@@ -335,23 +336,16 @@ storage:
 
 ## Implementation Order
 
-1. **`internal/camera`** — config parsing, stream registration, API
-2. **`internal/offline`** — placeholder frame injection (uses existing
+1. ✅ **`internal/camera`** — config parsing, stream registration, API
+2. ✅ **`internal/offline`** — placeholder frame injection (uses existing
    `Listener`/`Fire` pattern for producer state, no bus needed)
-3. **`internal/storage`** — segment writer, retention, playback API
-4. **`internal/events`** — event bus, MQTT, webhooks. Introduced here
-   because inference (step 5) is the first module that needs to fan out
-   notifications to multiple independent consumers (storage for
-   event-triggered recording, webhooks, MQTT, viewgroup). Prior modules
-   use direct calls or the existing `Listener` pattern.
-5. **`internal/inference`** — frame sampling, exec backend first, then
-   onnx. Publishes `DetectionEvent` to the event bus.
-6. **`internal/viewgroup`** — correlation engine (subscribes to bus)
-7. Snapshot & transcode profile enhancements
-
-Each phase is independently useful. Phase 1-2 gives you a better camera
-manager. Add phase 3 and you have a recorder. Phase 4-5 adds the event
-bus and intelligence. Phase 6-7 is the novel multi-angle layer.
+3. ✅ **`internal/storage`** — segment writer, retention, playback API
+4. ✅ **`internal/events`** — event bus, WebSocket, REST API
+   (MQTT and webhook export deferred)
+5. ✅ **`internal/inference`** — frame sampling, HTTP backend.
+   Publishes `DetectionEvent` to the event bus.
+6. ✅ **`internal/viewgroup`** — correlation engine (subscribes to bus)
+7. ✅ **`internal/snapshot`** + transcode profile virtual streams
 
 ## Deferred Work
 
@@ -364,10 +358,14 @@ bus and intelligence. Phase 6-7 is the novel multi-angle layer.
 
 ## Open Questions
 
-- [ ] Should `internal/camera` replace or wrap `streams:` config? (Wrap is
-      safer for upstream compat — cameras reference stream names)
-- [ ] SQLite vs flat-file manifest for recording index?
-- [ ] Should the inference frame sampler use Y4M (already supported) or
-      raw JPEG for the decode→detect pipeline?
+- [x] Should `internal/camera` replace or wrap `streams:` config?
+      **Decided: wrap.** Cameras reference stream URLs directly and
+      register them via `streams.New()`.
+- [x] SQLite vs flat-file manifest for recording index?
+      **Decided: filesystem scan.** Segments are discovered by walking
+      the date-structured directory tree. No database dependency.
+- [x] Should the inference frame sampler use Y4M or raw JPEG?
+      **Decided: JPEG.** Keyframe capture via `magic.NewKeyframe()` +
+      ffmpeg transcode to JPEG. Simple and compatible with HTTP backends.
 - [ ] MQTT topic structure for events?
 - [ ] Web UI — build one, or rely on API + Home Assistant integration?
