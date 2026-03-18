@@ -17,6 +17,9 @@ var log zerolog.Logger
 // Default is the global event bus instance.
 var Default *Bus
 
+// DefaultTracker is the global session tracker.
+var DefaultTracker *Tracker
+
 // recentEvents stores the last N events for the query API.
 var recentEvents []*Event
 var recentMu sync.RWMutex
@@ -27,6 +30,10 @@ func Init() {
 	log = app.GetLogger("events")
 
 	Default = NewBus()
+
+	// Start session tracker (aggregates detections into sessions)
+	DefaultTracker = NewTracker(Default, defaultQuietDuration)
+	DefaultTracker.Start()
 
 	// Store recent events for query API
 	recent := Default.Subscribe(Filter{}, 256)
@@ -44,8 +51,9 @@ func Init() {
 	// WebSocket live event stream
 	ws.HandleFunc("events", wsHandler)
 
-	// REST API for querying recent events
+	// REST API
 	api.HandleFunc("api/events", apiEvents)
+	api.HandleFunc("api/sessions", apiSessions)
 
 	log.Debug().Msg("[events] initialized")
 }
@@ -122,4 +130,17 @@ func apiEvents(w http.ResponseWriter, r *http.Request) {
 		result = []*Event{}
 	}
 	api.ResponseJSON(w, result)
+}
+
+// apiSessions returns active and recently ended sessions.
+func apiSessions(w http.ResponseWriter, r *http.Request) {
+	if DefaultTracker == nil {
+		api.ResponseJSON(w, map[string]any{"active": []*Session{}, "recent": []*Session{}})
+		return
+	}
+
+	api.ResponseJSON(w, map[string]any{
+		"active": DefaultTracker.ActiveSessions(),
+		"recent": DefaultTracker.RecentSessions(),
+	})
 }

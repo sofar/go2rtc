@@ -35,6 +35,24 @@ var samplers []*Sampler
 func Init() {
 	log = app.GetLogger("inference")
 
+	// Register the detection parser so the session tracker can
+	// extract region/class info from detection events.
+	events.RegisterDetectionParser(func(data any) []events.DetectionDetail {
+		de, ok := data.(DetectionEvent)
+		if !ok {
+			return nil
+		}
+		details := make([]events.DetectionDetail, len(de.Detections))
+		for i, d := range de.Detections {
+			details[i] = events.DetectionDetail{
+				Region:     de.Region,
+				Class:      d.Class,
+				Confidence: d.Confidence,
+			}
+		}
+		return details
+	})
+
 	var cfg struct {
 		Mod Config `yaml:"inference"`
 	}
