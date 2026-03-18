@@ -210,7 +210,8 @@ func apiRegions(w http.ResponseWriter, r *http.Request) {
 }
 
 // persistRegions updates the regions for a camera in the YAML config
-// file using yaml.Patch to preserve formatting and comments.
+// file. Uses yaml.Patch to preserve formatting, then post-processes
+// polygon arrays to use inline flow style ([[x,y],[x,y]]).
 func persistRegions(cameraName string, regions map[string]*Region) error {
 	if app.ConfigPath == "" {
 		return fmt.Errorf("no config file path")
@@ -237,7 +238,68 @@ func persistRegions(cameraName string, regions map[string]*Region) error {
 		return err
 	}
 
+	// Post-process: convert multi-line arrays to flow style
+	out = fixRegionYAMLStyle(out)
+
 	return os.WriteFile(app.ConfigPath, out, 0o644)
+}
+
+// fixRegionYAMLStyle rewrites polygon and detect arrays from multi-line
+// YAML to inline flow style.
+func fixRegionYAMLStyle(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	var result []string
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
+
+		// Fix polygon: multi-line "- - N" pairs → [[x,y],[x,y]]
+		if strings.HasSuffix(trimmed, "polygon:") && i+1 < len(lines) &&
+			strings.Contains(lines[i+1], "- -") {
+			var points []string
+			i++
+			for i < len(lines) {
+				l := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(l, "- -") {
+					x := strings.TrimSpace(strings.TrimPrefix(l, "- -"))
+					i++
+					if i < len(lines) {
+						y := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[i]), "-"))
+						points = append(points, "["+x+","+y+"]")
+						i++
+					}
+				} else {
+					break
+				}
+			}
+			result = append(result, indent+"polygon: ["+strings.Join(points, ",")+"]")
+			continue
+		}
+
+		// Fix detect: multi-line "- value" → [value, value]
+		if strings.HasSuffix(trimmed, "detect:") && i+1 < len(lines) &&
+			strings.HasPrefix(strings.TrimSpace(lines[i+1]), "- ") {
+			var items []string
+			i++
+			for i < len(lines) {
+				l := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(l, "- ") {
+					items = append(items, strings.TrimPrefix(l, "- "))
+					i++
+				} else {
+					break
+				}
+			}
+			result = append(result, indent+"detect: ["+strings.Join(items, ", ")+"]")
+			continue
+		}
+
+		result = append(result, line)
+		i++
+	}
+	return []byte(strings.Join(result, "\n"))
 }
 
 // loadConfig parses the cameras: section from go2rtc config.
