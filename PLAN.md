@@ -355,6 +355,17 @@ storage:
 - [ ] **Webhook export** — Subscribe to the event bus and HTTP POST
       event payloads to configured URLs. Config: `events.webhooks[]`
       with URL and event type filter.
+- [ ] **HTTP backend response adapters** — Support alternative detection
+      services by mapping their JSON response formats to our Detection
+      struct. Config: `inference.format: codeproject|frigate|custom`.
+      Candidates: CodeProject.AI, Frigate detector API, Double Take,
+      cloud APIs (Google Vision, AWS Rekognition).
+- [ ] **OpenVINO native backend** — Run ONNX/OpenVINO models directly
+      in Go via CGo bindings, bypassing the HTTP overhead. Priority
+      backend for Intel CPUs (AVX2/VNNI) and Intel iGPUs. ~10-20ms
+      inference with YOLOv8n on 12th Gen Intel (current hardware).
+- [ ] **Coral EdgeTPU backend** — Native TFLite backend for Google
+      Coral USB/PCIe accelerators. ~5-10ms inference, ideal for ARM.
 
 ## Open Questions
 
