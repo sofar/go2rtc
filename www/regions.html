@@ -23,7 +23,6 @@
             position: absolute;
             top: 0;
             left: 0;
-            pointer-events: none;
         }
         .sidebar {
             min-width: 280px;
@@ -92,7 +91,7 @@
         <button id="btn-delete">delete region</button>
         <button id="btn-refresh">refresh snapshot</button>
     </div>
-    <p class="help">Click on the snapshot to place polygon points. Select a region to edit it. Minimum 3 points per region.</p>
+    <p class="help">Click on the snapshot to place polygon points. Right-click a point to remove it. Select a region in the sidebar to edit it. Minimum 3 points per region.</p>
 
     <div class="editor">
         <div class="canvas-wrap" id="canvas-wrap">
@@ -147,8 +146,13 @@
         const params = new URLSearchParams(location.search);
         if (params.get('camera')) {
             cameraSelect.value = decodeURIComponent(params.get('camera'));
-            loadSnapshot();
+            selectCamera();
         }
+    }
+
+    function selectCamera() {
+        loadExistingRegions();
+        loadSnapshot();
     }
 
     function loadSnapshot() {
@@ -162,6 +166,7 @@
         imgH = snapshot.naturalHeight;
         overlay.width = snapshot.clientWidth;
         overlay.height = snapshot.clientHeight;
+        // Redraw regions now that we know the image dimensions
         drawAll();
     };
 
@@ -174,24 +179,75 @@
     });
 
     // Click to add point
-    canvasWrap.addEventListener('click', (e) => {
+    overlay.addEventListener('click', (e) => {
         if (!activeRegion || !imgW) return;
-        const rect = snapshot.getBoundingClientRect();
+        const rect = overlay.getBoundingClientRect();
         const scaleX = imgW / rect.width;
         const scaleY = imgH / rect.height;
         const x = Math.round((e.clientX - rect.left) * scaleX);
         const y = Math.round((e.clientY - rect.top) * scaleY);
+
+        // Check if clicking near an existing point — select that region instead
+        const hit = findPointHit(e.clientX - rect.left, e.clientY - rect.top, rect.width / imgW, rect.height / imgH);
+        if (hit) {
+            activeRegion = hit.region;
+            renderList();
+            drawAll();
+            return;
+        }
+
         regions[activeRegion].polygon.push([x, y]);
         drawAll();
         updateOutput();
         renderList();
     });
 
-    cameraSelect.addEventListener('change', () => {
-        // Load existing regions from camera config
-        loadSnapshot();
-        loadExistingRegions();
+    // Right-click to remove nearest point
+    overlay.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (!activeRegion || !imgW) return;
+        const rect = overlay.getBoundingClientRect();
+        const scaleX = imgW / rect.width;
+        const scaleY = imgH / rect.height;
+        const mx = Math.round((e.clientX - rect.left) * scaleX);
+        const my = Math.round((e.clientY - rect.top) * scaleY);
+
+        const pts = regions[activeRegion].polygon;
+        if (pts.length === 0) return;
+
+        // Find nearest point within 20px (in image coords)
+        let minDist = Infinity, minIdx = -1;
+        pts.forEach((p, i) => {
+            const d = Math.hypot(p[0] - mx, p[1] - my);
+            if (d < minDist) { minDist = d; minIdx = i; }
+        });
+
+        const threshold = 20 * Math.max(scaleX, scaleY);
+        if (minDist < threshold && minIdx >= 0) {
+            pts.splice(minIdx, 1);
+            drawAll();
+            updateOutput();
+            renderList();
+        }
     });
+
+    // Find if click is near an existing point in any region
+    function findPointHit(cx, cy, sx, sy) {
+        const threshold = 8; // pixels on screen
+        for (const [name, region] of Object.entries(regions)) {
+            if (name === activeRegion) continue;
+            for (const p of region.polygon) {
+                const dx = p[0] * sx - cx;
+                const dy = p[1] * sy - cy;
+                if (Math.hypot(dx, dy) < threshold) {
+                    return {region: name};
+                }
+            }
+        }
+        return null;
+    }
+
+    cameraSelect.addEventListener('change', selectCamera);
 
     async function loadExistingRegions() {
         const cam = cameraSelect.value;
@@ -202,7 +258,7 @@
         if (data.regions) {
             for (const [name, region] of Object.entries(data.regions)) {
                 regions[name] = {
-                    polygon: region.polygon || [],
+                    polygon: (region.polygon || []).map(p => [p[0], p[1]]),
                     detect: region.detect || []
                 };
             }
