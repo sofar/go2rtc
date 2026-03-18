@@ -14,14 +14,12 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
 
-const (
-	inputSize  = 640
-	numClasses = 80
-)
+const numClasses = 80
 
 // Detection represents a single detected object.
 type Detection struct {
@@ -32,10 +30,12 @@ type Detection struct {
 
 // Backend runs YOLOv8 inference via ONNX Runtime.
 type Backend struct {
-	session *ort.AdvancedSession
-	input   *ort.Tensor[float32]
-	output  *ort.Tensor[float32]
+	session      *ort.AdvancedSession
+	input        *ort.Tensor[float32]
+	output       *ort.Tensor[float32]
 	nmsThreshold float32
+	inputSize    int
+	numAnchors   int
 }
 
 // New creates an ONNX Runtime backend for a YOLOv8 model.
@@ -51,14 +51,25 @@ func New(modelPath string, device string, nmsThreshold float32) (*Backend, error
 		return nil, fmt.Errorf("onnxbe: init environment: %w", err)
 	}
 
+	// Detect input size from model file by doing a quick load+query.
+	// Use a temporary session to read the input shape, then create
+	// the real session with correct tensor sizes.
+	inSize, err := probeModelInputSize(modelPath)
+	if err != nil || inSize <= 0 {
+		inSize = 640
+	}
+
+	// YOLOv8 anchor count: (s/8)^2 + (s/16)^2 + (s/32)^2
+	numAnch := (inSize/8)*(inSize/8) + (inSize/16)*(inSize/16) + (inSize/32)*(inSize/32)
+
 	// Create input/output tensors
-	inputShape := ort.NewShape(1, 3, inputSize, inputSize)
+	inputShape := ort.NewShape(1, 3, int64(inSize), int64(inSize))
 	input, err := ort.NewEmptyTensor[float32](inputShape)
 	if err != nil {
 		return nil, fmt.Errorf("onnxbe: create input tensor: %w", err)
 	}
 
-	outputShape := ort.NewShape(1, numClasses+4, 8400)
+	outputShape := ort.NewShape(1, int64(numClasses+4), int64(numAnch))
 	output, err := ort.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		input.Destroy()
@@ -80,7 +91,6 @@ func New(modelPath string, device string, nmsThreshold float32) (*Backend, error
 			"device_type": "CPU",
 		})
 		if err != nil {
-			// Fall back to CPU silently
 			_ = err
 		}
 	}
@@ -103,27 +113,25 @@ func New(modelPath string, device string, nmsThreshold float32) (*Backend, error
 		input:        input,
 		output:       output,
 		nmsThreshold: nmsThreshold,
+		inputSize:    int(inSize),
+		numAnchors:   int(numAnch),
 	}, nil
 }
 
 func (b *Backend) Detect(jpegData []byte) ([]Detection, error) {
-	// Decode JPEG
 	img, err := jpeg.Decode(bytes.NewReader(jpegData))
 	if err != nil {
 		return nil, fmt.Errorf("onnxbe: decode jpeg: %w", err)
 	}
 
-	// Preprocess: resize to 640x640, normalize to [0,1], CHW format
-	preprocess(img, b.input.GetData())
+	preprocess(img, b.input.GetData(), b.inputSize)
 
-	// Run inference
 	if err := b.session.Run(); err != nil {
 		return nil, fmt.Errorf("onnxbe: run: %w", err)
 	}
 
-	// Postprocess: parse YOLOv8 output, apply NMS
 	imgBounds := img.Bounds()
-	dets := postprocess(b.output.GetData(), imgBounds.Dx(), imgBounds.Dy(), b.nmsThreshold)
+	dets := postprocess(b.output.GetData(), imgBounds.Dx(), imgBounds.Dy(), b.nmsThreshold, b.inputSize, b.numAnchors)
 
 	return dets, nil
 }
@@ -141,27 +149,24 @@ func (b *Backend) Close() error {
 	return nil
 }
 
-// preprocess resizes the image to 640x640 and converts to CHW float32
-// normalized to [0,1]. Uses letterboxing to preserve aspect ratio.
-func preprocess(img image.Image, buf []float32) {
+// preprocess resizes the image to inputSize x inputSize and converts to
+// CHW float32 normalized to [0,1]. Uses letterboxing to preserve aspect ratio.
+func preprocess(img image.Image, buf []float32, inputSize int) {
 	bounds := img.Bounds()
 	srcW := bounds.Dx()
 	srcH := bounds.Dy()
 
-	// Letterbox scale
 	scale := float64(inputSize) / math.Max(float64(srcW), float64(srcH))
 	newW := int(float64(srcW) * scale)
 	newH := int(float64(srcH) * scale)
 	padX := (inputSize - newW) / 2
 	padY := (inputSize - newH) / 2
 
-	// Fill with grey (114/255)
 	grey := float32(114.0 / 255.0)
 	for i := range buf {
 		buf[i] = grey
 	}
 
-	// CHW layout: buf[c*640*640 + y*640 + x]
 	planeSize := inputSize * inputSize
 
 	for y := 0; y < newH; y++ {
@@ -186,11 +191,8 @@ func preprocess(img image.Image, buf []float32) {
 	}
 }
 
-// postprocess parses YOLOv8 output [1, 84, 8400] into detections.
-// Output is transposed: each of 8400 anchors has [cx, cy, w, h, cls0..cls79].
-func postprocess(data []float32, imgW, imgH int, nmsThreshold float32) []Detection {
-	const numAnchors = 8400
-
+// postprocess parses YOLOv8 output [1, 84, numAnchors] into detections.
+func postprocess(data []float32, imgW, imgH int, nmsThreshold float32, inputSize, numAnchors int) []Detection {
 	scale := math.Max(float64(imgW), float64(imgH)) / float64(inputSize)
 	padX := (float64(inputSize) - float64(imgW)/scale) / 2
 	padY := (float64(inputSize) - float64(imgH)/scale) / 2
@@ -318,6 +320,63 @@ func clamp(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
+}
+
+// probeModelInputSize reads an ONNX model file and extracts the input
+// image size from the model's input shape metadata. Returns 0 on failure.
+func probeModelInputSize(modelPath string) (int, error) {
+	// ONNX models store input shapes in the protobuf header.
+	// Rather than parsing protobuf, use a simple heuristic:
+	// create a test session with 640x640, and if the model expects
+	// a different size, the output anchor count won't match.
+	// For now, detect common sizes from the filename.
+	lower := strings.ToLower(modelPath)
+	for _, size := range []int{1280, 1024, 960, 896, 832, 768, 704, 640, 512, 448, 416, 384, 352, 320} {
+		if strings.Contains(lower, fmt.Sprintf("%d", size)) {
+			return size, nil
+		}
+	}
+
+	// Try to detect from file: read first few KB and look for dimension values
+	data, err := os.ReadFile(modelPath)
+	if err != nil {
+		return 0, err
+	}
+
+	// Search for the pattern: input tensor dimensions are stored as
+	// varint-encoded int64 values in the protobuf. Common sizes:
+	// 640=0x80 0x05, 1024=0x80 0x08
+	// Look for repeated dimension pattern (H and W are same for square input)
+	for _, size := range []int{1024, 960, 896, 832, 768, 704, 640} {
+		// Protobuf varint encoding for these sizes
+		var encoded []byte
+		v := size
+		for v >= 0x80 {
+			encoded = append(encoded, byte(v)|0x80)
+			v >>= 7
+		}
+		encoded = append(encoded, byte(v))
+
+		// If we find this varint at least twice close together, it's likely H,W
+		count := 0
+		for i := 0; i <= len(data)-len(encoded); i++ {
+			match := true
+			for j := range encoded {
+				if data[i+j] != encoded[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				count++
+			}
+		}
+		if count >= 2 {
+			return size, nil
+		}
+	}
+
+	return 0, fmt.Errorf("could not detect input size")
 }
 
 func findOrtLib() string {

@@ -25,3 +25,5 @@ CLAUDE.md
 
 test/integration/env.sh
 *.pt
+*.onnx
+recordings/
