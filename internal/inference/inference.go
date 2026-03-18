@@ -27,6 +27,7 @@ type Config struct {
 	SampleFPS           float64            `yaml:"sample_fps"`
 	ConfidenceThreshold float32            `yaml:"confidence_threshold"`
 	ClassThreshold      map[string]float32 `yaml:"class_threshold"`
+	MinFrames           int                `yaml:"min_frames"` // detections before session starts
 
 	// HTTP backend config
 	URL     string `yaml:"url"`
@@ -84,6 +85,11 @@ func Init() {
 	minConf := cfg.Mod.ConfidenceThreshold
 	if minConf <= 0 {
 		minConf = 0.5
+	}
+
+	// Configure session tracker min_frames
+	if cfg.Mod.MinFrames > 0 {
+		events.SetMinFrames(cfg.Mod.MinFrames)
 	}
 
 	bus := events.Default

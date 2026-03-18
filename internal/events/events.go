@@ -31,8 +31,9 @@ func Init() {
 
 	Default = NewBus()
 
-	// Start session tracker (aggregates detections into sessions)
-	DefaultTracker = NewTracker(Default, defaultQuietDuration)
+	// Start session tracker (aggregates detections into sessions).
+	// minFrames is configured later by inference.Init via SetMinFrames.
+	DefaultTracker = NewTracker(Default, defaultQuietDuration, 1)
 	DefaultTracker.Start()
 
 	// Store recent events for query API
@@ -150,6 +151,17 @@ func GetRecentByCamera(eventType, cameraName string, maxAge time.Duration) *Even
 		}
 	}
 	return nil
+}
+
+// SetMinFrames configures how many consecutive detections are required
+// before a session starts. Called by inference.Init after loading config.
+func SetMinFrames(n int) {
+	if DefaultTracker != nil && n > 0 {
+		DefaultTracker.mu.Lock()
+		DefaultTracker.minFrames = n
+		DefaultTracker.mu.Unlock()
+		log.Info().Int("min_frames", n).Msg("[events] session min_frames updated")
+	}
 }
 
 // apiSessions returns active and recently ended sessions.

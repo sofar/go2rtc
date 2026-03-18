@@ -62,15 +62,29 @@ func RegisterDetectionParser(fn DetectionParser) {
 	detectionParser = fn
 }
 
+// pendingSession tracks detections that haven't yet met the min_frames
+// threshold to become a full session.
+type pendingSession struct {
+	camera    string
+	region    string
+	class     string
+	count     int
+	firstSeen time.Time
+	lastSeen  time.Time
+	peakConf  float32
+}
+
 // Tracker aggregates raw detection events into sessions.
 type Tracker struct {
-	bus      *Bus
-	quietDur time.Duration
+	bus       *Bus
+	quietDur  time.Duration
+	minFrames int // detections required before session starts
 
-	mu     sync.Mutex
-	active map[sessionKey]*Session
-	ended  []*Session
-	seqID  int
+	mu      sync.Mutex
+	active  map[sessionKey]*Session
+	pending map[sessionKey]*pendingSession
+	ended   []*Session
+	seqID   int
 
 	stop chan struct{}
 }
@@ -80,16 +94,22 @@ const (
 	maxEndedSessions     = 500
 )
 
-// NewTracker creates a session tracker.
-func NewTracker(bus *Bus, quietDur time.Duration) *Tracker {
+// NewTracker creates a session tracker. minFrames is the number of
+// consecutive detections required before a session starts (0 or 1 = immediate).
+func NewTracker(bus *Bus, quietDur time.Duration, minFrames int) *Tracker {
 	if quietDur <= 0 {
 		quietDur = defaultQuietDuration
 	}
+	if minFrames < 1 {
+		minFrames = 1
+	}
 	return &Tracker{
-		bus:      bus,
-		quietDur: quietDur,
-		active:   make(map[sessionKey]*Session),
-		stop:     make(chan struct{}),
+		bus:       bus,
+		quietDur:  quietDur,
+		minFrames: minFrames,
+		active:    make(map[sessionKey]*Session),
+		pending:   make(map[sessionKey]*pendingSession),
+		stop:      make(chan struct{}),
 	}
 }
 
@@ -174,30 +194,8 @@ func (t *Tracker) handleDetection(e *Event) {
 	for _, det := range details {
 		key := sessionKey{region: det.Region, class: det.Class}
 
-		s, exists := t.active[key]
-		if !exists {
-			t.seqID++
-			s = &Session{
-				ID:             fmt.Sprintf("%s-%d", now.Format("20060102-150405"), t.seqID),
-				Camera:         e.Camera,
-				Cameras:        []string{e.Camera},
-				Region:         det.Region,
-				Class:          det.Class,
-				Start:          now,
-				LastSeen:       now,
-				PeakConfidence: det.Confidence,
-				DetectionCount: 1,
-				Active:         true,
-				camerasSet:     map[string]bool{e.Camera: true},
-			}
-			t.active[key] = s
-
-			t.bus.Publish(&Event{
-				Type:   TypeSessionStart,
-				Camera: e.Camera,
-				Data:   sessionCopy(s, now),
-			})
-		} else {
+		// Already an active session — extend it
+		if s, exists := t.active[key]; exists {
 			s.LastSeen = now
 			s.DetectionCount++
 			if det.Confidence > s.PeakConfidence {
@@ -208,6 +206,80 @@ func (t *Tracker) handleDetection(e *Event) {
 				s.camerasSet[e.Camera] = true
 				s.Cameras = append(s.Cameras, e.Camera)
 			}
+			continue
+		}
+
+		// Check pending (pre-session accumulator)
+		if p, exists := t.pending[key]; exists {
+			p.count++
+			p.lastSeen = now
+			p.camera = e.Camera
+			if det.Confidence > p.peakConf {
+				p.peakConf = det.Confidence
+			}
+
+			if p.count >= t.minFrames {
+				// Promote to active session
+				delete(t.pending, key)
+				t.seqID++
+				s := &Session{
+					ID:             fmt.Sprintf("%s-%d", now.Format("20060102-150405"), t.seqID),
+					Camera:         e.Camera,
+					Cameras:        []string{e.Camera},
+					Region:         det.Region,
+					Class:          det.Class,
+					Start:          p.firstSeen,
+					LastSeen:       now,
+					PeakConfidence: p.peakConf,
+					DetectionCount: p.count,
+					Active:         true,
+					camerasSet:     map[string]bool{e.Camera: true},
+				}
+				t.active[key] = s
+				t.bus.Publish(&Event{
+					Type:   TypeSessionStart,
+					Camera: e.Camera,
+					Data:   sessionCopy(s, now),
+				})
+			}
+			continue
+		}
+
+		// New detection — start pending
+		t.pending[key] = &pendingSession{
+			camera:    e.Camera,
+			region:    det.Region,
+			class:     det.Class,
+			count:     1,
+			firstSeen: now,
+			lastSeen:  now,
+			peakConf:  det.Confidence,
+		}
+
+		// If minFrames is 1, promote immediately
+		if t.minFrames <= 1 {
+			p := t.pending[key]
+			delete(t.pending, key)
+			t.seqID++
+			s := &Session{
+				ID:             fmt.Sprintf("%s-%d", now.Format("20060102-150405"), t.seqID),
+				Camera:         e.Camera,
+				Cameras:        []string{e.Camera},
+				Region:         det.Region,
+				Class:          det.Class,
+				Start:          now,
+				LastSeen:       now,
+				PeakConfidence: p.peakConf,
+				DetectionCount: 1,
+				Active:         true,
+				camerasSet:     map[string]bool{e.Camera: true},
+			}
+			t.active[key] = s
+			t.bus.Publish(&Event{
+				Type:   TypeSessionStart,
+				Camera: e.Camera,
+				Data:   sessionCopy(s, now),
+			})
 		}
 	}
 }
@@ -235,6 +307,13 @@ func (t *Tracker) expireSessions() {
 			})
 
 			delete(t.active, key)
+		}
+	}
+
+	// Expire stale pending detections that never reached minFrames
+	for key, p := range t.pending {
+		if now.Sub(p.lastSeen) >= t.quietDur {
+			delete(t.pending, key)
 		}
 	}
 }

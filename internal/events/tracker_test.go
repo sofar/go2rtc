@@ -37,7 +37,7 @@ func setupTrackerTest(quietDur time.Duration) (*Bus, *Tracker) {
 		return details
 	})
 
-	tracker := NewTracker(bus, quietDur)
+	tracker := NewTracker(bus, quietDur, 1)
 	tracker.Start()
 	return bus, tracker
 }
@@ -203,7 +203,7 @@ func TestTracker_NoParserNoSessions(t *testing.T) {
 	detectionParser = nil
 	defer func() { detectionParser = old }()
 
-	tracker := NewTracker(bus, time.Second)
+	tracker := NewTracker(bus, time.Second, 1)
 	tracker.Start()
 	defer tracker.Stop()
 
