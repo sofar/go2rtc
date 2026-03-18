@@ -68,36 +68,43 @@
         .det-tag.truck { background: #2c3e50; }
         .det-tag.default { background: #e67e22; }
         .region-card .quiet { color: #bbb; font-style: italic; font-size: 12px; }
-        .sessions-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 8px;
+        .sessions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
-        .session-card {
+        .session-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 10px;
             border: 1px solid #ddd;
-            border-radius: 6px;
-            padding: 8px 12px;
+            border-radius: 4px;
             font-size: 13px;
         }
-        .session-card.active {
+        .session-row.active {
             border-color: #2ecc71;
             background: #f0faf4;
         }
-        .session-card.ended {
-            border-color: #ccc;
+        .session-row.ended {
+            border-color: #eee;
             background: #fafafa;
         }
-        .session-card .session-class {
-            font-weight: bold;
-            font-size: 14px;
-        }
-        .session-card .session-meta {
-            color: #666;
-            font-size: 11px;
-        }
-        .session-card .session-dur {
+        .session-row .session-dur {
             font-family: monospace;
-            color: #333;
+            font-weight: bold;
+            min-width: 50px;
+        }
+        .session-row .session-meta {
+            color: #666;
+            font-size: 12px;
+        }
+        .session-row .session-time {
+            color: #999;
+            font-size: 11px;
+            font-family: monospace;
+            margin-left: auto;
+            white-space: nowrap;
         }
         .sessions-header {
             font-weight: bold;
@@ -291,43 +298,48 @@
         const res = await fetch('api/sessions', {cache: 'no-cache'});
         const data = await res.json();
 
-        const active = data.active || [];
-        const recent = (data.recent || []).slice(-20).reverse();
+        // Sort newest start at top, oldest at bottom
+        const active = (data.active || []).sort((a, b) =>
+            new Date(b.start) - new Date(a.start));
+        const recent = (data.recent || []).slice(-30).sort((a, b) =>
+            new Date(b.start) - new Date(a.start));
 
         let html = '';
 
         if (active.length > 0) {
             html += '<div class="sessions-section">';
-            html += '<div class="sessions-header">Active Sessions</div>';
-            html += '<div class="sessions-grid">';
+            html += `<div class="sessions-header">Active Sessions (${active.length})</div>`;
+            html += '<div class="sessions-list">';
             active.forEach(s => {
-                const dur = formatDuration(s.duration);
-                html += `<div class="session-card active">
-                    <span class="${detTagClass(s.class)}">${s.class}</span>
-                    <span class="session-dur">${dur}</span>
-                    <div class="session-meta">${s.region} &middot; ${s.camera} &middot; ${s.detection_count} det &middot; ${(s.peak_confidence*100).toFixed(0)}% peak</div>
-                </div>`;
+                html += renderSessionRow(s, true);
             });
             html += '</div></div>';
         }
 
         if (recent.length > 0) {
             html += '<div class="sessions-section">';
-            html += '<div class="sessions-header">Recent Sessions</div>';
-            html += '<div class="sessions-grid">';
+            html += `<div class="sessions-header">Previous Sessions (${recent.length})</div>`;
+            html += '<div class="sessions-list">';
             recent.forEach(s => {
-                const dur = formatDuration(s.duration);
-                const time = formatTime(s.start);
-                html += `<div class="session-card ended">
-                    <span class="${detTagClass(s.class)}">${s.class}</span>
-                    <span class="session-dur">${dur}</span>
-                    <div class="session-meta">${s.region} &middot; ${s.camera} &middot; ${time} &middot; ${s.detection_count} det</div>
-                </div>`;
+                html += renderSessionRow(s, false);
             });
             html += '</div></div>';
         }
 
         sessionsPanel.innerHTML = html;
+    }
+
+    function renderSessionRow(s, isActive) {
+        const dur = formatDuration(s.duration);
+        const startTime = formatTime(s.start);
+        const cls = isActive ? 'active' : 'ended';
+        const conf = (s.peak_confidence * 100).toFixed(0);
+        return `<div class="session-row ${cls}">
+            <span class="${detTagClass(s.class)}">${s.class}</span>
+            <span class="session-dur">${dur}</span>
+            <span class="session-meta">${s.region} &middot; ${s.camera} &middot; ${s.detection_count} det &middot; ${conf}%</span>
+            <span class="session-time">${startTime}</span>
+        </div>`;
     }
 
     function formatDuration(sec) {
