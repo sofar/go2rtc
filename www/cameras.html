@@ -124,6 +124,7 @@
             card.querySelector('.links').innerHTML =
                 `<a href="stream.html?src=${src}">stream</a>` +
                 `<a href="api/snapshot/${src}?annotate=true" target="_blank">annotated</a>` +
+                `<a href="regions.html?camera=${src}">regions</a>` +
                 `<a href="links.html?src=${src}">links</a>` +
                 (cam.recording && cam.recording.enabled
                     ? `<a href="recordings.html?camera=${src}">recordings</a>` : '');

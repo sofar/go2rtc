@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>regions - go2rtc</title>
+    <style>
+        .editor {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .canvas-wrap {
+            position: relative;
+            display: inline-block;
+            cursor: crosshair;
+        }
+        .canvas-wrap img {
+            display: block;
+            max-width: 100%;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        .sidebar {
+            min-width: 280px;
+            flex: 0 0 280px;
+        }
+        .region-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .region-list li {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        .region-list li.active {
+            border-color: #e67e22;
+            background: #fef5ec;
+        }
+        .region-list li .name { font-weight: bold; }
+        .region-list li .pts { color: #888; font-size: 12px; }
+        .output {
+            width: 100%;
+            min-height: 120px;
+            font-family: monospace;
+            font-size: 13px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .color-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .help { color: #888; font-size: 13px; }
+    </style>
+</head>
+<body>
+
+<script src="main.js"></script>
+
+<main>
+    <div class="toolbar">
+        <b>Region Editor</b>
+        <select id="camera-select">
+            <option value="">select camera</option>
+        </select>
+        <button id="btn-new">new region</button>
+        <button id="btn-undo">undo point</button>
+        <button id="btn-delete">delete region</button>
+        <button id="btn-refresh">refresh snapshot</button>
+    </div>
+    <p class="help">Click on the snapshot to place polygon points. Select a region to edit it. Minimum 3 points per region.</p>
+
+    <div class="editor">
+        <div class="canvas-wrap" id="canvas-wrap">
+            <img id="snapshot" crossorigin="anonymous">
+            <canvas id="overlay"></canvas>
+        </div>
+        <div class="sidebar">
+            <ul class="region-list" id="region-list"></ul>
+
+            <div style="margin-top:10px">
+                <label>Region name: <input type="text" id="region-name" style="width:140px" placeholder="e.g. driveway"></label>
+            </div>
+            <div style="margin-top:6px">
+                <label>Detect classes: <input type="text" id="detect-classes" style="width:140px" placeholder="person, car, dog"></label>
+            </div>
+
+            <div style="margin-top:14px">
+                <b>YAML output</b> (copy to config)
+                <textarea class="output" id="output" readonly></textarea>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+    const cameraSelect = document.getElementById('camera-select');
+    const snapshot = document.getElementById('snapshot');
+    const overlay = document.getElementById('overlay');
+    const canvasWrap = document.getElementById('canvas-wrap');
+    const regionList = document.getElementById('region-list');
+    const regionNameInput = document.getElementById('region-name');
+    const detectInput = document.getElementById('detect-classes');
+    const output = document.getElementById('output');
+    const ctx = overlay.getContext('2d');
+
+    const COLORS = ['#e67e22', '#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#1abc9c', '#f39c12', '#34495e'];
+
+    let regions = {};  // {name: {polygon: [[x,y],...], detect: [...]}}
+    let activeRegion = null;
+    let imgW = 0, imgH = 0;
+
+    // Load cameras
+    async function loadCameras() {
+        const res = await fetch('api/cameras', {cache: 'no-cache'});
+        const cameras = await res.json();
+        cameras.forEach(cam => {
+            const opt = document.createElement('option');
+            opt.value = cam.name;
+            opt.textContent = cam.name;
+            cameraSelect.appendChild(opt);
+        });
+        const params = new URLSearchParams(location.search);
+        if (params.get('camera')) {
+            cameraSelect.value = decodeURIComponent(params.get('camera'));
+            loadSnapshot();
+        }
+    }
+
+    function loadSnapshot() {
+        const cam = cameraSelect.value;
+        if (!cam) return;
+        snapshot.src = `api/snapshot/${encodeURIComponent(cam)}?_t=${Date.now()}`;
+    }
+
+    snapshot.onload = () => {
+        imgW = snapshot.naturalWidth;
+        imgH = snapshot.naturalHeight;
+        overlay.width = snapshot.clientWidth;
+        overlay.height = snapshot.clientHeight;
+        drawAll();
+    };
+
+    window.addEventListener('resize', () => {
+        if (imgW) {
+            overlay.width = snapshot.clientWidth;
+            overlay.height = snapshot.clientHeight;
+            drawAll();
+        }
+    });
+
+    // Click to add point
+    canvasWrap.addEventListener('click', (e) => {
+        if (!activeRegion || !imgW) return;
+        const rect = snapshot.getBoundingClientRect();
+        const scaleX = imgW / rect.width;
+        const scaleY = imgH / rect.height;
+        const x = Math.round((e.clientX - rect.left) * scaleX);
+        const y = Math.round((e.clientY - rect.top) * scaleY);
+        regions[activeRegion].polygon.push([x, y]);
+        drawAll();
+        updateOutput();
+        renderList();
+    });
+
+    cameraSelect.addEventListener('change', () => {
+        // Load existing regions from camera config
+        loadSnapshot();
+        loadExistingRegions();
+    });
+
+    async function loadExistingRegions() {
+        const cam = cameraSelect.value;
+        if (!cam) return;
+        const res = await fetch(`api/cameras?name=${encodeURIComponent(cam)}`, {cache: 'no-cache'});
+        const data = await res.json();
+        regions = {};
+        if (data.regions) {
+            for (const [name, region] of Object.entries(data.regions)) {
+                regions[name] = {
+                    polygon: region.polygon || [],
+                    detect: region.detect || []
+                };
+            }
+        }
+        activeRegion = Object.keys(regions)[0] || null;
+        renderList();
+        drawAll();
+        updateOutput();
+    }
+
+    document.getElementById('btn-new').addEventListener('click', () => {
+        const name = prompt('Region name (e.g. driveway):');
+        if (!name || regions[name]) return;
+        regions[name] = {polygon: [], detect: ['person', 'car']};
+        activeRegion = name;
+        renderList();
+        updateOutput();
+    });
+
+    document.getElementById('btn-undo').addEventListener('click', () => {
+        if (!activeRegion || !regions[activeRegion]) return;
+        regions[activeRegion].polygon.pop();
+        drawAll();
+        updateOutput();
+        renderList();
+    });
+
+    document.getElementById('btn-delete').addEventListener('click', () => {
+        if (!activeRegion) return;
+        delete regions[activeRegion];
+        activeRegion = Object.keys(regions)[0] || null;
+        renderList();
+        drawAll();
+        updateOutput();
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', loadSnapshot);
+
+    regionNameInput.addEventListener('input', () => {
+        if (!activeRegion) return;
+        const newName = regionNameInput.value.trim();
+        if (newName && newName !== activeRegion && !regions[newName]) {
+            regions[newName] = regions[activeRegion];
+            delete regions[activeRegion];
+            activeRegion = newName;
+            renderList();
+            updateOutput();
+        }
+    });
+
+    detectInput.addEventListener('input', () => {
+        if (!activeRegion || !regions[activeRegion]) return;
+        regions[activeRegion].detect = detectInput.value.split(',').map(s => s.trim()).filter(Boolean);
+        updateOutput();
+    });
+
+    function renderList() {
+        const names = Object.keys(regions);
+        regionList.innerHTML = names.map((name, i) => {
+            const color = COLORS[i % COLORS.length];
+            const pts = regions[name].polygon.length;
+            const active = name === activeRegion ? 'active' : '';
+            return `<li class="${active}" data-name="${name}">
+                <span><span class="color-dot" style="background:${color}"></span>
+                <span class="name">${name}</span></span>
+                <span class="pts">${pts} pts</span>
+            </li>`;
+        }).join('');
+
+        regionList.querySelectorAll('li').forEach(li => {
+            li.addEventListener('click', () => {
+                activeRegion = li.dataset.name;
+                regionNameInput.value = activeRegion;
+                detectInput.value = (regions[activeRegion].detect || []).join(', ');
+                renderList();
+                drawAll();
+            });
+        });
+
+        if (activeRegion && regions[activeRegion]) {
+            regionNameInput.value = activeRegion;
+            detectInput.value = (regions[activeRegion].detect || []).join(', ');
+        }
+    }
+
+    function drawAll() {
+        if (!overlay.width) return;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        const scaleX = overlay.width / imgW;
+        const scaleY = overlay.height / imgH;
+
+        const names = Object.keys(regions);
+        names.forEach((name, i) => {
+            const region = regions[name];
+            const color = COLORS[i % COLORS.length];
+            const isActive = name === activeRegion;
+            const pts = region.polygon;
+
+            if (pts.length === 0) return;
+
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0] * scaleX, pts[0][1] * scaleY);
+            for (let j = 1; j < pts.length; j++) {
+                ctx.lineTo(pts[j][0] * scaleX, pts[j][1] * scaleY);
+            }
+            if (pts.length >= 3) ctx.closePath();
+
+            ctx.strokeStyle = color;
+            ctx.lineWidth = isActive ? 3 : 2;
+            ctx.stroke();
+
+            ctx.fillStyle = color + '22';
+            if (pts.length >= 3) ctx.fill();
+
+            // Draw points
+            pts.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p[0] * scaleX, p[1] * scaleY, isActive ? 5 : 3, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+            });
+
+            // Label
+            if (pts.length > 0) {
+                ctx.font = '13px Arial';
+                ctx.fillStyle = color;
+                ctx.fillText(name, pts[0][0] * scaleX + 8, pts[0][1] * scaleY - 6);
+            }
+        });
+    }
+
+    function updateOutput() {
+        const cam = cameraSelect.value || 'camera_name';
+        let yaml = `cameras:\n  ${cam}:\n    regions:\n`;
+        for (const [name, region] of Object.entries(regions)) {
+            yaml += `      ${name}:\n`;
+            yaml += `        polygon: [${region.polygon.map(p => `[${p[0]},${p[1]}]`).join(',')}]\n`;
+            yaml += `        detect: [${region.detect.join(', ')}]\n`;
+        }
+        output.value = yaml;
+    }
+
+    loadCameras();
+</script>
+
+</body>
+</html>
