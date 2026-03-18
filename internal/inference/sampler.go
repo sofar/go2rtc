@@ -17,15 +17,16 @@ type Sampler struct {
 	camera  string
 	regions map[string]*camera.Region
 	backend Backend
-	bus     *events.Bus
-	minConf float32
+	bus            *events.Bus
+	minConf        float32
+	classThreshold map[string]float32
 
 	interval time.Duration
 	stop     chan struct{}
 }
 
 // NewSampler creates a sampler for a camera.
-func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval time.Duration, minConf float32) *Sampler {
+func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval time.Duration, minConf float32, classThreshold map[string]float32) *Sampler {
 	if interval <= 0 {
 		interval = time.Second / 3 // ~3 fps
 	}
@@ -33,13 +34,14 @@ func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval t
 		minConf = 0.5
 	}
 	return &Sampler{
-		camera:   cam.Name,
-		regions:  cam.Regions,
-		backend:  backend,
-		bus:      bus,
-		minConf:  minConf,
-		interval: interval,
-		stop:     make(chan struct{}),
+		camera:         cam.Name,
+		regions:        cam.Regions,
+		backend:        backend,
+		bus:            bus,
+		minConf:        minConf,
+		classThreshold: classThreshold,
+		interval:       interval,
+		stop:           make(chan struct{}),
 	}
 }
 
@@ -79,10 +81,14 @@ func (s *Sampler) sample() {
 		return
 	}
 
-	// Filter by confidence threshold
+	// Filter by confidence threshold (per-class overrides global)
 	var filtered []Detection
 	for _, d := range detections {
-		if d.Confidence >= s.minConf {
+		threshold := s.minConf
+		if ct, ok := s.classThreshold[d.Class]; ok {
+			threshold = ct
+		}
+		if d.Confidence >= threshold {
 			filtered = append(filtered, d)
 		}
 	}

@@ -21,9 +21,10 @@ var log zerolog.Logger
 
 // Config holds the inference module configuration.
 type Config struct {
-	Backend             string  `yaml:"backend"`
-	SampleFPS           float64 `yaml:"sample_fps"`
-	ConfidenceThreshold float32 `yaml:"confidence_threshold"`
+	Backend             string             `yaml:"backend"`
+	SampleFPS           float64            `yaml:"sample_fps"`
+	ConfidenceThreshold float32            `yaml:"confidence_threshold"`
+	ClassThreshold      map[string]float32 `yaml:"class_threshold"`
 
 	// HTTP backend config
 	URL     string `yaml:"url"`
@@ -81,7 +82,7 @@ func Init() {
 	bus := events.Default
 
 	for _, cam := range camera.All() {
-		sampler := NewSampler(cam, backend, bus, interval, minConf)
+		sampler := NewSampler(cam, backend, bus, interval, minConf, cfg.Mod.ClassThreshold)
 		sampler.Start()
 		samplers = append(samplers, sampler)
 		log.Info().Str("camera", cam.Name).Msg("[inference] started")
