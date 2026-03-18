@@ -90,6 +90,8 @@
         <button id="btn-undo">undo point</button>
         <button id="btn-delete">delete region</button>
         <button id="btn-refresh">refresh snapshot</button>
+        <button id="btn-save" style="background:#2ecc71; color:white; font-weight:bold">save</button>
+        <span id="save-status" style="color:#888; font-size:13px"></span>
     </div>
     <p class="help">Click on the snapshot to place polygon points. Right-click a point to remove it. Select a region in the sidebar to edit it. Minimum 3 points per region.</p>
 
@@ -336,6 +338,34 @@
     });
 
     document.getElementById('btn-refresh').addEventListener('click', loadSnapshot);
+
+    document.getElementById('btn-save').addEventListener('click', async () => {
+        const cam = cameraSelect.value;
+        if (!cam) { alert('Select a camera first'); return; }
+
+        const saveStatus = document.getElementById('save-status');
+        saveStatus.textContent = 'saving...';
+
+        try {
+            const res = await fetch(`api/cameras/regions?name=${encodeURIComponent(cam)}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(regions),
+            });
+            if (res.ok) {
+                saveStatus.textContent = 'saved ✓';
+                saveStatus.style.color = '#2a2';
+                setTimeout(() => { saveStatus.textContent = ''; }, 3000);
+            } else {
+                const err = await res.text();
+                saveStatus.textContent = 'error: ' + err;
+                saveStatus.style.color = '#c33';
+            }
+        } catch (e) {
+            saveStatus.textContent = 'error: ' + e.message;
+            saveStatus.style.color = '#c33';
+        }
+    });
 
     regionNameInput.addEventListener('input', () => {
         if (!activeRegion) return;

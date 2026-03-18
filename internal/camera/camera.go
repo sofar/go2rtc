@@ -8,7 +8,10 @@ package camera
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +20,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/creds"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	"github.com/rs/zerolog"
 )
 
@@ -44,6 +48,7 @@ func Init() {
 	}
 
 	api.HandleFunc("api/cameras", apiCameras)
+	api.HandleFunc("api/cameras/regions", apiRegions)
 }
 
 // register validates a camera config and registers its stream.
@@ -146,6 +151,93 @@ func apiCameras(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.ResponseJSON(w, All())
+}
+
+// apiRegions handles PUT /api/cameras/regions?name=X to update a
+// camera's regions live and persist to the config file.
+func apiRegions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "PUT required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name parameter required", http.StatusBadRequest)
+		return
+	}
+
+	cam := Get(name)
+	if cam == nil {
+		http.Error(w, "camera not found: "+name, http.StatusNotFound)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var regions map[string]*Region
+	if err := json.Unmarshal(body, &regions); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate
+	for rname, region := range regions {
+		if len(region.Polygon) < 3 {
+			http.Error(w, fmt.Sprintf("region %q needs at least 3 points", rname), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Update in-memory
+	camerasMu.Lock()
+	cam.Regions = regions
+	camerasMu.Unlock()
+
+	// Persist to config file
+	if err := persistRegions(name, regions); err != nil {
+		log.Error().Err(err).Str("camera", name).Msg("[camera] persist regions")
+		http.Error(w, "saved in memory but failed to write config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Info().Str("camera", name).Int("regions", len(regions)).Msg("[camera] regions updated")
+	api.ResponseJSON(w, regions)
+}
+
+// persistRegions updates the regions for a camera in the YAML config
+// file using yaml.Patch to preserve formatting and comments.
+func persistRegions(cameraName string, regions map[string]*Region) error {
+	if app.ConfigPath == "" {
+		return fmt.Errorf("no config file path")
+	}
+
+	data, err := os.ReadFile(app.ConfigPath)
+	if err != nil {
+		return err
+	}
+
+	// Convert regions to a generic map for YAML serialization
+	regionsMap := make(map[string]any, len(regions))
+	for name, region := range regions {
+		regionsMap[name] = map[string]any{
+			"polygon": region.Polygon,
+			"detect":  region.Detect,
+		}
+	}
+
+	// Patch cameras.<cameraName>.regions in the YAML
+	path := []string{"cameras", cameraName, "regions"}
+	out, err := yaml.Patch(data, path, regionsMap)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(app.ConfigPath, out, 0o644)
 }
 
 // loadConfig parses the cameras: section from go2rtc config.
