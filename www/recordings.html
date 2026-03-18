@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>recordings - go2rtc</title>
+    <style>
+        .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        td.time { white-space: nowrap; font-family: monospace; font-size: 13px; }
+        td.size { text-align: right; white-space: nowrap; }
+        .player {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .player video {
+            width: 100%;
+            border-radius: 6px;
+            background: #000;
+        }
+        .player-info {
+            padding: 4px 0;
+            color: #666;
+            font-size: 13px;
+        }
+        #total { color: #888; }
+    </style>
+</head>
+<body>
+
+<script src="main.js"></script>
+
+<main>
+    <div class="filters">
+        <b>Recordings</b>
+        <select id="camera-select">
+            <option value="">select camera</option>
+        </select>
+        <input type="date" id="date-filter">
+        <span id="total"></span>
+    </div>
+
+    <div class="player" id="player" style="display:none">
+        <video controls autoplay></video>
+        <div class="player-info"></div>
+    </div>
+
+    <table>
+        <thead>
+        <tr>
+            <th>time</th>
+            <th>file</th>
+            <th style="text-align:right">size</th>
+            <th>actions</th>
+        </tr>
+        </thead>
+        <tbody id="segments"></tbody>
+    </table>
+</main>
+
+<script>
+    const cameraSelect = document.getElementById('camera-select');
+    const dateFilter = document.getElementById('date-filter');
+    const tbody = document.getElementById('segments');
+    const totalEl = document.getElementById('total');
+    const playerDiv = document.getElementById('player');
+    const video = playerDiv.querySelector('video');
+    const playerInfo = playerDiv.querySelector('.player-info');
+
+    // Set date filter to today
+    dateFilter.value = new Date().toISOString().split('T')[0];
+
+    // Load camera list
+    async function loadCameras() {
+        const res = await fetch('api/cameras', {cache: 'no-cache'});
+        const cameras = await res.json();
+        cameras.forEach(cam => {
+            if (cam.recording && cam.recording.enabled) {
+                const opt = document.createElement('option');
+                opt.value = cam.name;
+                opt.textContent = cam.name;
+                cameraSelect.appendChild(opt);
+            }
+        });
+        // Auto-select from URL
+        const params = new URLSearchParams(location.search);
+        if (params.get('camera')) {
+            cameraSelect.value = decodeURIComponent(params.get('camera'));
+            loadSegments();
+        }
+    }
+
+    async function loadSegments() {
+        const camera = cameraSelect.value;
+        if (!camera) {
+            tbody.innerHTML = '';
+            totalEl.textContent = '';
+            return;
+        }
+
+        const url = new URL('api/recordings', location.href);
+        url.searchParams.set('camera', camera);
+
+        const date = dateFilter.value;
+        if (date) {
+            url.searchParams.set('from', date + 'T00:00:00Z');
+            url.searchParams.set('to', date + 'T23:59:59Z');
+        }
+
+        const res = await fetch(url, {cache: 'no-cache'});
+        const segments = await res.json();
+
+        let totalSize = 0;
+        segments.forEach(s => totalSize += s.size);
+
+        totalEl.textContent = `${segments.length} segments, ${formatSize(totalSize)}`;
+
+        tbody.innerHTML = segments.map(seg => {
+            const ts = new Date(seg.start);
+            const time = ts.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+            const playUrl = `api/recordings/play?camera=${encodeURIComponent(camera)}&ts=${encodeURIComponent(seg.start)}`;
+            return `
+                <tr>
+                    <td class="time">${time}</td>
+                    <td>${seg.path}</td>
+                    <td class="size">${formatSize(seg.size)}</td>
+                    <td>
+                        <a href="#" onclick="playSegment('${playUrl}', '${seg.path}', '${time}'); return false;">play</a>
+                        <a href="${playUrl}" download>download</a>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function playSegment(url, path, time) {
+        video.src = url;
+        playerInfo.textContent = `${path} — ${time}`;
+        playerDiv.style.display = 'block';
+        video.play();
+    }
+
+    function formatSize(bytes) {
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+        return bytes + ' B';
+    }
+
+    cameraSelect.addEventListener('change', loadSegments);
+    dateFilter.addEventListener('change', loadSegments);
+
+    loadCameras();
+</script>
+
+</body>
+</html>

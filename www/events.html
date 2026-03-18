@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>events - go2rtc</title>
+    <style>
+        .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+        }
+        .badge-detection { background: #e67e22; }
+        .badge-state_change { background: #3498db; }
+        .badge-group_detection { background: #9b59b6; }
+        .badge-recording { background: #27ae60; }
+        .correlated { color: #2a2; font-weight: bold; }
+        .confidence { color: #666; font-size: 12px; }
+        td.time { white-space: nowrap; font-family: monospace; font-size: 13px; }
+        #count { color: #888; }
+    </style>
+</head>
+<body>
+
+<script src="main.js"></script>
+
+<main>
+    <div class="filters">
+        <b>Events</b>
+        <select id="type-filter">
+            <option value="">all types</option>
+            <option value="detection">detection</option>
+            <option value="state_change">state_change</option>
+            <option value="group_detection">group_detection</option>
+        </select>
+        <select id="camera-filter">
+            <option value="">all cameras</option>
+        </select>
+        <label><input type="checkbox" id="live" checked> live updates</label>
+        <span id="count"></span>
+    </div>
+    <table>
+        <thead>
+        <tr>
+            <th>time</th>
+            <th>type</th>
+            <th>camera</th>
+            <th>details</th>
+        </tr>
+        </thead>
+        <tbody id="events"></tbody>
+    </table>
+</main>
+
+<script>
+    const tbody = document.getElementById('events');
+    const typeFilter = document.getElementById('type-filter');
+    const cameraFilter = document.getElementById('camera-filter');
+    const countEl = document.getElementById('count');
+    let knownCameras = new Set();
+
+    function badgeClass(type) {
+        return 'badge badge-' + (type || '').replace(/[^a-z_]/g, '');
+    }
+
+    function formatTime(ts) {
+        const d = new Date(ts);
+        return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    }
+
+    function formatDetails(ev) {
+        const data = ev.data;
+        if (!data) return '';
+
+        if (ev.type === 'detection' && data.detections) {
+            const dets = data.detections.map(d =>
+                `${d.class} <span class="confidence">${(d.confidence * 100).toFixed(0)}%</span>`
+            ).join(', ');
+            const region = data.region ? ` <span class="confidence">[${data.region}]</span>` : '';
+            return dets + region;
+        }
+
+        if (ev.type === 'group_detection') {
+            const corr = data.correlated
+                ? '<span class="correlated">correlated</span>'
+                : 'single';
+            return `${data.class} ${corr} (${(data.cameras || []).join(', ')})`;
+        }
+
+        if (ev.type === 'state_change') {
+            return data.online ? 'online' : 'offline' + (data.last_error ? ': ' + data.last_error : '');
+        }
+
+        return JSON.stringify(data).substring(0, 100);
+    }
+
+    async function reload() {
+        const url = new URL('api/events', location.href);
+        const type = typeFilter.value;
+        const cam = cameraFilter.value;
+        if (type) url.searchParams.set('type', type);
+        if (cam) url.searchParams.set('camera', cam);
+
+        const res = await fetch(url, {cache: 'no-cache'});
+        const events = await res.json();
+
+        // Update camera filter dropdown
+        events.forEach(e => {
+            if (e.camera && !knownCameras.has(e.camera)) {
+                knownCameras.add(e.camera);
+                const opt = document.createElement('option');
+                opt.value = e.camera;
+                opt.textContent = e.camera;
+                cameraFilter.appendChild(opt);
+            }
+        });
+
+        countEl.textContent = `${events.length} events`;
+
+        // Render newest first
+        const reversed = events.slice().reverse();
+        tbody.innerHTML = reversed.map(ev => `
+            <tr>
+                <td class="time">${formatTime(ev.timestamp)}</td>
+                <td><span class="${badgeClass(ev.type)}">${ev.type}</span></td>
+                <td>${ev.camera || ''}</td>
+                <td>${formatDetails(ev)}</td>
+            </tr>
+        `).join('');
+    }
+
+    typeFilter.addEventListener('change', reload);
+    cameraFilter.addEventListener('change', reload);
+
+    reload();
+    setInterval(() => {
+        if (document.getElementById('live').checked) reload();
+    }, 2000);
+</script>
+
+</body>
+</html>

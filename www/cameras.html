@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>cameras - go2rtc</title>
+    <style>
+        .status-online { color: #2a2; font-weight: bold; }
+        .status-offline { color: #c33; font-weight: bold; }
+        .cam-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 10px;
+        }
+        .cam-card {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .cam-card img {
+            width: 100%;
+            display: block;
+            background: #222;
+            min-height: 180px;
+            object-fit: contain;
+        }
+        .cam-card .info {
+            padding: 8px 12px;
+            font-size: 14px;
+        }
+        .cam-card .info h3 {
+            margin: 0 0 4px 0;
+            font-size: 16px;
+        }
+        .cam-card .info .meta {
+            color: #666;
+            font-size: 12px;
+        }
+        .cam-card .links {
+            padding: 4px 12px 8px;
+            font-size: 13px;
+        }
+        .cam-card .links a {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<script src="main.js"></script>
+
+<main>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <b>Cameras</b>
+        <label><input type="checkbox" id="autorefresh" checked> auto-refresh snapshots</label>
+    </div>
+    <div class="cam-grid" id="grid"></div>
+</main>
+
+<script>
+    const grid = document.getElementById('grid');
+    let cameras = [];
+    let statuses = {};
+
+    async function loadCameras() {
+        const [camRes, statusRes] = await Promise.all([
+            fetch('api/cameras', {cache: 'no-cache'}),
+            fetch('api/cameras/status', {cache: 'no-cache'})
+        ]);
+        cameras = await camRes.json();
+        statuses = await statusRes.json();
+        render();
+    }
+
+    function render() {
+        // Preserve existing cards, update in place
+        const existing = new Set();
+        grid.querySelectorAll('.cam-card').forEach(el => existing.add(el.dataset.name));
+
+        cameras.forEach(cam => {
+            const name = cam.name;
+            const st = statuses[name];
+            const online = st ? st.online : true;
+            const statusClass = online ? 'status-online' : 'status-offline';
+            const statusText = online ? 'online' : 'offline';
+            const src = encodeURIComponent(name);
+
+            let card = grid.querySelector(`.cam-card[data-name="${name}"]`);
+            if (!card) {
+                card = document.createElement('div');
+                card.className = 'cam-card';
+                card.dataset.name = name;
+                card.innerHTML = `
+                    <img>
+                    <div class="info">
+                        <h3></h3>
+                        <div class="meta"></div>
+                    </div>
+                    <div class="links"></div>
+                `;
+                grid.appendChild(card);
+            }
+
+            const img = card.querySelector('img');
+            img.alt = name;
+            // Only refresh if auto-refresh is on
+            if (document.getElementById('autorefresh').checked) {
+                img.src = `api/snapshot/${src}?_t=${Date.now()}`;
+            } else if (!img.src || img.src.includes('undefined')) {
+                img.src = `api/snapshot/${src}`;
+            }
+
+            card.querySelector('h3').textContent = name;
+            const meta = [];
+            if (cam.view_group) meta.push(`group: ${cam.view_group}`);
+            if (cam.recording && cam.recording.enabled) meta.push('recording');
+            if (cam.regions) meta.push(`${Object.keys(cam.regions).length} region(s)`);
+            if (cam.transcode_profiles) meta.push(`${Object.keys(cam.transcode_profiles).length} profile(s)`);
+
+            card.querySelector('.meta').innerHTML =
+                `<span class="${statusClass}">${statusText}</span>` +
+                (meta.length ? ' &middot; ' + meta.join(' &middot; ') : '');
+
+            card.querySelector('.links').innerHTML =
+                `<a href="stream.html?src=${src}">stream</a>` +
+                `<a href="api/snapshot/${src}?annotate=true" target="_blank">annotated</a>` +
+                `<a href="links.html?src=${src}">links</a>` +
+                (cam.recording && cam.recording.enabled
+                    ? `<a href="recordings.html?camera=${src}">recordings</a>` : '');
+
+            existing.delete(name);
+        });
+
+        // Remove cards for cameras that no longer exist
+        existing.forEach(name => {
+            const el = grid.querySelector(`.cam-card[data-name="${name}"]`);
+            if (el) el.remove();
+        });
+    }
+
+    loadCameras();
+    setInterval(loadCameras, 5000);
+</script>
+
+</body>
+</html>

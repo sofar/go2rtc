@@ -126,6 +126,9 @@ document.body.innerHTML = `
 <header>
     <nav>
         <a href="index.html"><b>go2rtc</b></a>
+        <a href="cameras.html">cameras</a>
+        <a href="events.html">events</a>
+        <a href="recordings.html">recordings</a>
         <a href="add.html">add</a>
         <a href="config.html">config</a>
         <a href="log.html">log</a>
