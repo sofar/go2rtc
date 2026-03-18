@@ -47,6 +47,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/tapo"
 	"github.com/AlexxIT/go2rtc/internal/tuya"
 	"github.com/AlexxIT/go2rtc/internal/v4l2"
+	"github.com/AlexxIT/go2rtc/internal/viewgroup"
 	"github.com/AlexxIT/go2rtc/internal/webrtc"
 	"github.com/AlexxIT/go2rtc/internal/webtorrent"
 	"github.com/AlexxIT/go2rtc/internal/wyoming"
@@ -119,6 +120,7 @@ func main() {
 		{"storage", storage.Init},
 		{"events", events.Init},
 		{"inference", inference.Init},
+		{"viewgroup", viewgroup.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
