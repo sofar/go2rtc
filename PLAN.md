@@ -353,6 +353,15 @@ Each phase is independently useful. Phase 1-2 gives you a better camera
 manager. Add phase 3 and you have a recorder. Phase 4-5 adds the event
 bus and intelligence. Phase 6-7 is the novel multi-angle layer.
 
+## Deferred Work
+
+- [ ] **MQTT export** — Subscribe to the event bus and publish detection/
+      state events to an MQTT broker (go2rtc already has `pkg/mqtt`).
+      Config: `events.mqtt.broker`, `events.mqtt.topic_prefix`.
+- [ ] **Webhook export** — Subscribe to the event bus and HTTP POST
+      event payloads to configured URLs. Config: `events.webhooks[]`
+      with URL and event type filter.
+
 ## Open Questions
 
 - [ ] Should `internal/camera` replace or wrap `streams:` config? (Wrap is
