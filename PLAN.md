@@ -349,6 +349,13 @@ storage:
 
 ## Deferred Work
 
+- [ ] **Transcode-on-record + inference coexistence** — Currently the
+      ffmpeg transcode subprocess for recording consumes the stream
+      exclusively, preventing the inference frame capture from getting
+      keyframes. Needs rearchitecture: either have inference tap into
+      the existing receiver chain rather than creating a new consumer
+      per frame, or use a shared frame buffer that multiple consumers
+      can read from.
 - [ ] **MQTT export** — Subscribe to the event bus and publish detection/
       state events to an MQTT broker (go2rtc already has `pkg/mqtt`).
       Config: `events.mqtt.broker`, `events.mqtt.topic_prefix`.

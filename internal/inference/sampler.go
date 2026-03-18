@@ -3,6 +3,7 @@ package inference
 import (
 	"bytes"
 	"image"
+	"image/draw"
 	"image/jpeg"
 	"time"
 
@@ -59,6 +60,9 @@ func (s *Sampler) Stop() {
 }
 
 func (s *Sampler) run() {
+	// Wait for the stream to establish before starting inference
+	time.Sleep(5 * time.Second)
+
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
@@ -105,6 +109,7 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 	// Decode the full frame once
 	img, err := jpeg.Decode(bytes.NewReader(fullJPEG))
 	if err != nil {
+		log.Warn().Err(err).Str("camera", s.camera).Int("jpeg_len", len(fullJPEG)).Msg("[inference] decode full frame failed")
 		return
 	}
 
@@ -133,6 +138,7 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 			log.Debug().Err(err).Str("camera", s.camera).Str("region", regionName).Msg("[inference] detect")
 			continue
 		}
+
 
 		// Filter by confidence and class
 		var regionDets []Detection
@@ -217,8 +223,8 @@ type DetectionEvent struct {
 }
 
 // captureFrame grabs a single JPEG frame from the camera's stream.
-// Returns the JPEG data and the native image dimensions (for polygon
-// matching — the bbox normalized [0..1] maps to these dimensions).
+// Returns the JPEG data and the native image dimensions. Uses a
+// timeout to avoid blocking forever when the stream is busy.
 func (s *Sampler) captureFrame() ([]byte, int, int) {
 	stream := streams.Get(s.camera)
 	if stream == nil {
@@ -230,19 +236,36 @@ func (s *Sampler) captureFrame() ([]byte, int, int) {
 		return nil, 0, 0
 	}
 
-	once := &core.OnceBuffer{}
-	_, _ = cons.WriteTo(once)
-	b := once.Buffer()
+	// Capture with timeout — the stream may be busy with other consumers
+	type result struct {
+		data []byte
+		codec string
+	}
+	ch := make(chan result, 1)
+	go func() {
+		once := &core.OnceBuffer{}
+		_, _ = cons.WriteTo(once)
+		ch <- result{data: once.Buffer(), codec: cons.CodecName()}
+	}()
+
+	var r result
+	select {
+	case r = <-ch:
+	case <-time.After(5 * time.Second):
+		stream.RemoveConsumer(cons)
+		log.Debug().Str("camera", s.camera).Msg("[inference] frame capture timeout")
+		return nil, 0, 0
+	}
 	stream.RemoveConsumer(cons)
 
-	if len(b) == 0 {
+	if len(r.data) == 0 {
 		return nil, 0, 0
 	}
 
 	// Convert H264/H265 keyframe to JPEG via ffmpeg at native resolution
-	switch cons.CodecName() {
+	switch r.codec {
 	case core.CodecH264, core.CodecH265:
-		jpegData, err := ffmpeg.JPEGWithScale(b, -1, -1)
+		jpegData, err := ffmpeg.JPEGWithScale(r.data, -1, -1)
 		if err != nil {
 			log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] transcode")
 			return nil, 0, 0
@@ -250,8 +273,8 @@ func (s *Sampler) captureFrame() ([]byte, int, int) {
 		w, h := jpegDimensions(jpegData)
 		return jpegData, w, h
 	case core.CodecJPEG:
-		w, h := jpegDimensions(b)
-		return b, w, h
+		w, h := jpegDimensions(r.data)
+		return r.data, w, h
 	default:
 		return nil, 0, 0
 	}
@@ -284,10 +307,9 @@ func polygonBounds(polygon [][2]int) image.Rectangle {
 
 // cropImage extracts a rectangular region from an image.
 func cropImage(img image.Image, bounds image.Rectangle) image.Image {
-	// Clamp to image bounds
 	imgBounds := img.Bounds()
 	bounds = bounds.Intersect(imgBounds)
-	if bounds.Empty() {
+	if bounds.Empty() || bounds.Dx() < 10 || bounds.Dy() < 10 {
 		return nil
 	}
 
@@ -297,7 +319,11 @@ func cropImage(img image.Image, bounds image.Rectangle) image.Image {
 	if si, ok := img.(subImager); ok {
 		return si.SubImage(bounds)
 	}
-	return nil
+
+	// Fallback: copy to new RGBA
+	dst := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	draw.Draw(dst, dst.Bounds(), img, bounds.Min, draw.Src)
+	return dst
 }
 
 // remapBBox converts a bbox from crop-local normalized coordinates to

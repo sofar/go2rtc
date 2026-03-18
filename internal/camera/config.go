@@ -24,12 +24,16 @@ type Region struct {
 }
 
 // RecordingConfig controls segmented recording for a camera.
+// When Codec is set, the stream is transcoded via ffmpeg before
+// recording. When Codec is empty, the raw stream is recorded as-is.
 type RecordingConfig struct {
 	Enabled         bool   `yaml:"enabled" json:"enabled"`
 	Path            string `yaml:"path,omitempty" json:"path,omitempty"`
 	SegmentDuration string `yaml:"segment_duration,omitempty" json:"segment_duration,omitempty"`
 	Codec           string `yaml:"codec,omitempty" json:"codec,omitempty"`
 	Bitrate         string `yaml:"bitrate,omitempty" json:"bitrate,omitempty"`
+	Resolution      string `yaml:"resolution,omitempty" json:"resolution,omitempty"`
+	Hardware        string `yaml:"hardware,omitempty" json:"hardware,omitempty"` // vaapi, cuda, etc.
 	Retention       string `yaml:"retention,omitempty" json:"retention,omitempty"`
 }
 

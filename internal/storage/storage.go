@@ -71,7 +71,25 @@ func Init() {
 			basePath = rec.Path
 		}
 
-		stream := streams.Get(cam.Name)
+		// Determine which stream to record from.
+		// If transcoding is requested (codec is set), create a virtual
+		// transcoded stream and record from that. Otherwise record the
+		// raw camera stream directly.
+		streamName := cam.Name
+		if rec.Codec != "" {
+			streamName = cam.Name + "/_recording"
+			source := buildRecordingSource(cam.Name, rec)
+			if _, err := streams.New(streamName, source); err != nil {
+				log.Error().Err(err).Str("camera", cam.Name).Msg("[storage] create transcode stream")
+				continue
+			}
+			log.Info().
+				Str("camera", cam.Name).
+				Str("source", source).
+				Msg("[storage] transcode-on-record")
+		}
+
+		stream := streams.Get(streamName)
 		if stream == nil {
 			log.Error().Str("camera", cam.Name).Msg("[storage] stream not found")
 			continue
@@ -226,6 +244,32 @@ func parseTime(s string) time.Time {
 	}
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
+}
+
+// buildRecordingSource creates an ffmpeg: source URL for transcode-on-record.
+// Example output: ffmpeg:front_porch#video=h264#width=1920#height=1080#hardware=vaapi
+func buildRecordingSource(cameraName string, rec *camera.RecordingConfig) string {
+	source := "ffmpeg:" + cameraName + "#video=" + rec.Codec
+
+	if rec.Resolution != "" {
+		for _, sep := range []string{"x", "X", ":"} {
+			parts := strings.SplitN(rec.Resolution, sep, 2)
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				source += "#width=" + parts[0] + "#height=" + parts[1]
+				break
+			}
+		}
+	}
+
+	if rec.Bitrate != "" {
+		source += "#bitrate=" + rec.Bitrate
+	}
+
+	if rec.Hardware != "" {
+		source += "#hardware=" + rec.Hardware
+	}
+
+	return source
 }
 
 // GetRecorder returns the active recorder for a camera, or nil.
