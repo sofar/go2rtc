@@ -11,21 +11,6 @@
             gap: 10px;
             align-items: center;
         }
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 12px;
-            font-weight: bold;
-            color: white;
-        }
-        .badge-detection { background: #e67e22; }
-        .badge-state_change { background: #3498db; }
-        .badge-group_detection { background: #9b59b6; }
-        .badge-recording { background: #27ae60; }
-        .correlated { color: #2a2; font-weight: bold; }
-        .confidence { color: #666; font-size: 12px; }
-        td.time { white-space: nowrap; font-family: monospace; font-size: 13px; }
         #count { color: #888; }
         .region-grid {
             display: grid;
@@ -119,13 +104,7 @@
 
 <main>
     <div class="filters">
-        <b>Events</b>
-        <select id="type-filter">
-            <option value="">all types</option>
-            <option value="detection">detection</option>
-            <option value="state_change">state_change</option>
-            <option value="group_detection">group_detection</option>
-        </select>
+        <b>Sessions</b>
         <select id="camera-filter">
             <option value="">all cameras</option>
         </select>
@@ -138,34 +117,17 @@
 
     <div id="region-summary"></div>
 
-    <div id="sessions-panel" style="margin-bottom:10px"></div>
-
-    <table>
-        <thead>
-        <tr>
-            <th>time</th>
-            <th>type</th>
-            <th>camera</th>
-            <th>details</th>
-        </tr>
-        </thead>
-        <tbody id="events"></tbody>
-    </table>
+    <div id="sessions-panel"></div>
 </main>
 
 <script>
-    const tbody = document.getElementById('events');
-    const typeFilter = document.getElementById('type-filter');
     const cameraFilter = document.getElementById('camera-filter');
     const regionFilter = document.getElementById('region-filter');
     const regionSummary = document.getElementById('region-summary');
+    const sessionsPanel = document.getElementById('sessions-panel');
     const countEl = document.getElementById('count');
     let knownCameras = new Set();
     let knownRegions = new Set();
-
-    function badgeClass(type) {
-        return 'badge badge-' + (type || '').replace(/[^a-z_]/g, '');
-    }
 
     function detTagClass(cls) {
         const known = ['person','car','dog','cat','bird','truck'];
@@ -177,98 +139,107 @@
         return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
     }
 
-    function formatDetails(ev) {
-        const data = ev.data;
-        if (!data) return '';
-
-        if (ev.type === 'detection' && data.detections) {
-            const dets = data.detections.map(d =>
-                `<span class="${detTagClass(d.class)}">${d.class} ${(d.confidence * 100).toFixed(0)}%</span>`
-            ).join(' ');
-            const region = data.region ? ` <span class="confidence">[${data.region}]</span>` : '';
-            return dets + region;
-        }
-
-        if (ev.type === 'group_detection') {
-            const corr = data.correlated
-                ? '<span class="correlated">correlated</span>'
-                : 'single';
-            return `${data.class} ${corr} (${(data.cameras || []).join(', ')})`;
-        }
-
-        if (ev.type === 'state_change') {
-            return data.online ? 'online' : 'offline' + (data.last_error ? ': ' + data.last_error : '');
-        }
-
-        return JSON.stringify(data).substring(0, 100);
+    function formatDuration(sec) {
+        if (sec < 60) return sec.toFixed(0) + 's';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return m + 'm' + (s > 0 ? s + 's' : '');
     }
 
     async function reload() {
-        const url = new URL('api/events', location.href);
-        const type = typeFilter.value;
-        const cam = cameraFilter.value;
-        if (type) url.searchParams.set('type', type);
-        if (cam) url.searchParams.set('camera', cam);
+        const res = await fetch('api/sessions', {cache: 'no-cache'});
+        const data = await res.json();
 
-        const res = await fetch(url, {cache: 'no-cache'});
-        const allEvents = await res.json();
+        const camVal = cameraFilter.value;
+        const regionVal = regionFilter.value;
 
-        // Update filter dropdowns
-        allEvents.forEach(e => {
-            if (e.camera && !knownCameras.has(e.camera)) {
-                knownCameras.add(e.camera);
+        let active = data.active || [];
+        let recent = data.recent || [];
+
+        // Update filter dropdowns from session data
+        [...active, ...recent].forEach(s => {
+            if (s.camera && !knownCameras.has(s.camera)) {
+                knownCameras.add(s.camera);
                 const opt = document.createElement('option');
-                opt.value = e.camera;
-                opt.textContent = e.camera;
+                opt.value = s.camera;
+                opt.textContent = s.camera;
                 cameraFilter.appendChild(opt);
             }
-            if (e.data && e.data.region && !knownRegions.has(e.data.region)) {
-                knownRegions.add(e.data.region);
+            if (s.region && !knownRegions.has(s.region)) {
+                knownRegions.add(s.region);
                 const opt = document.createElement('option');
-                opt.value = e.data.region;
-                opt.textContent = e.data.region;
+                opt.value = s.region;
+                opt.textContent = s.region;
                 regionFilter.appendChild(opt);
             }
         });
 
-        // Apply region filter client-side
-        const regionVal = regionFilter.value;
-        const filtered = regionVal
-            ? allEvents.filter(e => e.data && e.data.region === regionVal)
-            : allEvents;
+        // Apply filters
+        if (camVal) {
+            active = active.filter(s => s.camera === camVal);
+            recent = recent.filter(s => s.camera === camVal);
+        }
+        if (regionVal) {
+            active = active.filter(s => s.region === regionVal);
+            recent = recent.filter(s => s.region === regionVal);
+        }
 
-        countEl.textContent = `${filtered.length} events`;
+        // Sort: newest start at top
+        active.sort((a, b) => new Date(b.start) - new Date(a.start));
+        // Sort recent by end time descending (most recently ended on top)
+        recent.sort((a, b) => new Date(b.end || b.last_seen) - new Date(a.end || a.last_seen));
 
-        // Build region summary from last 60 seconds
-        buildRegionSummary(allEvents);
+        countEl.textContent = `${active.length} active, ${recent.length} previous`;
 
-        // Render table newest first
-        const reversed = filtered.slice().reverse();
-        tbody.innerHTML = reversed.map(ev => `
-            <tr>
-                <td class="time">${formatTime(ev.timestamp)}</td>
-                <td><span class="${badgeClass(ev.type)}">${ev.type}</span></td>
-                <td>${ev.camera || ''}</td>
-                <td>${formatDetails(ev)}</td>
-            </tr>
-        `).join('');
+        // Build region summary from active sessions
+        buildRegionSummary(active);
+
+        // Render sessions
+        let html = '';
+
+        if (active.length > 0) {
+            html += '<div class="sessions-section">';
+            html += `<div class="sessions-header">Active Sessions (${active.length})</div>`;
+            html += '<div class="sessions-list">';
+            active.forEach(s => { html += renderSessionRow(s, true); });
+            html += '</div></div>';
+        }
+
+        html += '<div class="sessions-section">';
+        html += `<div class="sessions-header">Previous Sessions (${recent.length})</div>`;
+        html += '<div class="sessions-list">';
+        if (recent.length > 0) {
+            recent.forEach(s => { html += renderSessionRow(s, false); });
+        } else {
+            html += '<div style="color:#bbb; font-style:italic; padding:6px 10px">no previous sessions</div>';
+        }
+        html += '</div></div>';
+
+        sessionsPanel.innerHTML = html;
     }
 
-    function buildRegionSummary(events) {
-        const cutoff = Date.now() - 60000;
-        // {region: {cameras: Set, classes: {class: count}}}
+    function renderSessionRow(s, isActive) {
+        const dur = formatDuration(s.duration);
+        const startTime = formatTime(s.start);
+        const cls = isActive ? 'active' : 'ended';
+        const conf = (s.peak_confidence * 100).toFixed(0);
+        const endInfo = isActive ? '' : ` &middot; ended ${formatTime(s.end || s.last_seen)}`;
+        return `<div class="session-row ${cls}">
+            <span class="${detTagClass(s.class)}">${s.class}</span>
+            <span class="session-dur">${dur}</span>
+            <span class="session-meta">${s.region} &middot; ${s.camera} &middot; ${s.detection_count} det &middot; ${conf}%${endInfo}</span>
+            <span class="session-time">${startTime}</span>
+        </div>`;
+    }
+
+    function buildRegionSummary(activeSessions) {
+        // Group active sessions by region
         const regions = {};
-
-        events.forEach(ev => {
-            if (ev.type !== 'detection' || !ev.data || !ev.data.region) return;
-            if (new Date(ev.timestamp).getTime() < cutoff) return;
-
-            const r = ev.data.region;
-            if (!regions[r]) regions[r] = {cameras: new Set(), classes: {}};
-            regions[r].cameras.add(ev.camera);
-            (ev.data.detections || []).forEach(d => {
-                regions[r].classes[d.class] = (regions[r].classes[d.class] || 0) + 1;
-            });
+        activeSessions.forEach(s => {
+            if (!s.region) return;
+            if (!regions[s.region]) regions[s.region] = {cameras: new Set(), classes: {}};
+            regions[s.region].cameras.add(s.camera);
+            regions[s.region].classes[s.class] = (regions[s.region].classes[s.class] || 0) + 1;
         });
 
         const names = Object.keys(regions).sort();
@@ -287,79 +258,17 @@
             return `<div class="region-card" onclick="document.getElementById('region-filter').value='${name}'; reload();" style="cursor:pointer">
                 <h4>${name}</h4>
                 <div class="cameras-list">${cams}</div>
-                <div class="det-tags">${tags || '<span class="quiet">quiet</span>'}</div>
+                <div class="det-tags">${tags}</div>
             </div>`;
         }).join('') + '</div>';
     }
 
-    const sessionsPanel = document.getElementById('sessions-panel');
-
-    async function loadSessions() {
-        const res = await fetch('api/sessions', {cache: 'no-cache'});
-        const data = await res.json();
-
-        // Sort newest start at top, oldest at bottom
-        const active = (data.active || []).sort((a, b) =>
-            new Date(b.start) - new Date(a.start));
-        const recent = (data.recent || []).slice(-30).sort((a, b) =>
-            new Date(b.start) - new Date(a.start));
-
-        let html = '';
-
-        if (active.length > 0) {
-            html += '<div class="sessions-section">';
-            html += `<div class="sessions-header">Active Sessions (${active.length})</div>`;
-            html += '<div class="sessions-list">';
-            active.forEach(s => {
-                html += renderSessionRow(s, true);
-            });
-            html += '</div></div>';
-        }
-
-        if (recent.length > 0) {
-            html += '<div class="sessions-section">';
-            html += `<div class="sessions-header">Previous Sessions (${recent.length})</div>`;
-            html += '<div class="sessions-list">';
-            recent.forEach(s => {
-                html += renderSessionRow(s, false);
-            });
-            html += '</div></div>';
-        }
-
-        sessionsPanel.innerHTML = html;
-    }
-
-    function renderSessionRow(s, isActive) {
-        const dur = formatDuration(s.duration);
-        const startTime = formatTime(s.start);
-        const cls = isActive ? 'active' : 'ended';
-        const conf = (s.peak_confidence * 100).toFixed(0);
-        return `<div class="session-row ${cls}">
-            <span class="${detTagClass(s.class)}">${s.class}</span>
-            <span class="session-dur">${dur}</span>
-            <span class="session-meta">${s.region} &middot; ${s.camera} &middot; ${s.detection_count} det &middot; ${conf}%</span>
-            <span class="session-time">${startTime}</span>
-        </div>`;
-    }
-
-    function formatDuration(sec) {
-        if (sec < 60) return sec.toFixed(0) + 's';
-        const m = Math.floor(sec / 60);
-        const s = Math.floor(sec % 60);
-        return m + 'm' + (s > 0 ? s + 's' : '');
-    }
-
-    typeFilter.addEventListener('change', reload);
     cameraFilter.addEventListener('change', reload);
     regionFilter.addEventListener('change', reload);
 
     reload();
-    loadSessions();
     setInterval(() => {
-        if (document.getElementById('live').checked) {
-            reload();
-            loadSessions();
-        }
+        if (document.getElementById('live').checked) reload();
     }, 2000);
 </script>
 
