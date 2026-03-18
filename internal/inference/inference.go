@@ -9,11 +9,13 @@
 package inference
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/camera"
 	"github.com/AlexxIT/go2rtc/internal/events"
+	"github.com/AlexxIT/go2rtc/internal/inference/onnxbe"
 	"github.com/rs/zerolog"
 )
 
@@ -29,6 +31,11 @@ type Config struct {
 	// HTTP backend config
 	URL     string `yaml:"url"`
 	Timeout string `yaml:"timeout"`
+
+	// ONNX backend config
+	Model        string  `yaml:"model"`
+	Device       string  `yaml:"device"`        // "cpu" or "openvino"
+	NMSThreshold float32 `yaml:"nms_threshold"` // default 0.45
 }
 
 var samplers []*Sampler
@@ -91,15 +98,62 @@ func Init() {
 
 func createBackend(cfg Config) (Backend, error) {
 	switch cfg.Backend {
-	case "http", "":
+	case "onnx":
+		if cfg.Model == "" {
+			return nil, fmt.Errorf("inference: onnx backend requires model path")
+		}
+		return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold)
+	case "http":
 		if cfg.URL == "" {
 			return nil, nil
 		}
 		timeout, _ := time.ParseDuration(cfg.Timeout)
 		return NewHTTPBackend(cfg.URL, timeout), nil
+	case "":
+		// Auto-detect: if model is set, use onnx; if url is set, use http
+		if cfg.Model != "" {
+			return newOnnxWrapper(cfg.Model, cfg.Device, cfg.NMSThreshold)
+		}
+		if cfg.URL != "" {
+			timeout, _ := time.ParseDuration(cfg.Timeout)
+			return NewHTTPBackend(cfg.URL, timeout), nil
+		}
+		return nil, nil
 	default:
-		log.Warn().Str("backend", cfg.Backend).Msg("[inference] unknown backend, using http")
-		timeout, _ := time.ParseDuration(cfg.Timeout)
-		return NewHTTPBackend(cfg.URL, timeout), nil
+		return nil, fmt.Errorf("inference: unknown backend %q", cfg.Backend)
 	}
+}
+
+// onnxWrapper adapts onnxbe.Backend to the inference.Backend interface,
+// mapping onnxbe.Detection to inference.Detection.
+type onnxWrapper struct {
+	backend *onnxbe.Backend
+}
+
+func newOnnxWrapper(model, device string, nmsThreshold float32) (*onnxWrapper, error) {
+	b, err := onnxbe.New(model, device, nmsThreshold)
+	if err != nil {
+		return nil, err
+	}
+	return &onnxWrapper{backend: b}, nil
+}
+
+func (w *onnxWrapper) Detect(jpeg []byte) ([]Detection, error) {
+	dets, err := w.backend.Detect(jpeg)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Detection, len(dets))
+	for i, d := range dets {
+		result[i] = Detection{
+			Class:      d.Class,
+			Confidence: d.Confidence,
+			BBox:       d.BBox,
+		}
+	}
+	return result, nil
+}
+
+func (w *onnxWrapper) Close() error {
+	return w.backend.Close()
 }
