@@ -213,3 +213,54 @@ func TestGet(t *testing.T) {
 	assert.NotNil(t, Get("test"))
 	assert.Nil(t, Get("missing"))
 }
+
+func TestBuildTranscodeSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		camera  string
+		profile *Transcode
+		expect  string
+	}{
+		{
+			"h264 with resolution",
+			"front",
+			&Transcode{Codec: "h264", Resolution: "640x360"},
+			"ffmpeg:front#video=h264#width=640#height=360",
+		},
+		{
+			"h265 no resolution",
+			"cam1",
+			&Transcode{Codec: "h265"},
+			"ffmpeg:cam1#video=h265",
+		},
+		{
+			"colon separator",
+			"cam1",
+			&Transcode{Codec: "h264", Resolution: "1920:1080"},
+			"ffmpeg:cam1#video=h264#width=1920#height=1080",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, buildTranscodeSource(tt.camera, tt.profile))
+		})
+	}
+}
+
+func TestSplitResolution(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect []string
+	}{
+		{"640x360", []string{"640", "360"}},
+		{"1920X1080", []string{"1920", "1080"}},
+		{"1280:720", []string{"1280", "720"}},
+		{"invalid", nil},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expect, splitResolution(tt.input))
+		})
+	}
+}

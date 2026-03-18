@@ -40,6 +40,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/ring"
 	"github.com/AlexxIT/go2rtc/internal/roborock"
 	"github.com/AlexxIT/go2rtc/internal/rtmp"
+	"github.com/AlexxIT/go2rtc/internal/snapshot"
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/srtp"
 	"github.com/AlexxIT/go2rtc/internal/storage"
@@ -121,6 +122,7 @@ func main() {
 		{"events", events.Init},
 		{"inference", inference.Init},
 		{"viewgroup", viewgroup.Init},
+		{"snapshot", snapshot.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},

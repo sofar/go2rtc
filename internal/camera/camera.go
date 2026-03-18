@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -56,10 +57,57 @@ func register(cam *Camera) error {
 		return err
 	}
 
+	// Register transcode profiles as virtual streams:
+	//   front_porch/low  → ffmpeg:front_porch#video=h264#width=640#height=360
+	//   front_porch/high → ffmpeg:front_porch#video=h264#width=1920#height=1080
+	for profileName, profile := range cam.Transcode {
+		source := buildTranscodeSource(cam.Name, profile)
+		streamName := cam.Name + "/" + profileName
+		if _, err := streams.New(streamName, source); err != nil {
+			log.Warn().Err(err).
+				Str("camera", cam.Name).
+				Str("profile", profileName).
+				Msg("[camera] register transcode profile")
+			continue
+		}
+		log.Info().
+			Str("stream", streamName).
+			Str("source", source).
+			Msg("[camera] transcode profile registered")
+	}
+
 	camerasMu.Lock()
 	cameras[cam.Name] = cam
 	camerasMu.Unlock()
 
+	return nil
+}
+
+// buildTranscodeSource creates an ffmpeg: source URL for a transcode profile.
+func buildTranscodeSource(cameraName string, profile *Transcode) string {
+	source := "ffmpeg:" + cameraName + "#video=" + profile.Codec
+
+	if profile.Resolution != "" {
+		// Resolution format: "640x360" or "1920x1080"
+		parts := splitResolution(profile.Resolution)
+		if len(parts) == 2 {
+			source += "#width=" + parts[0] + "#height=" + parts[1]
+		}
+	}
+
+	return source
+}
+
+// splitResolution parses "WIDTHxHEIGHT" into ["WIDTH", "HEIGHT"].
+func splitResolution(s string) []string {
+	for _, sep := range []string{"x", "X", ":"} {
+		if i := len(sep); i > 0 {
+			parts := strings.SplitN(s, sep, 2)
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				return parts
+			}
+		}
+	}
 	return nil
 }
 
