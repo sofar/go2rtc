@@ -1,6 +1,8 @@
 package inference
 
 import (
+	"bytes"
+	"image/jpeg"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/camera"
@@ -70,7 +72,7 @@ func (s *Sampler) run() {
 }
 
 func (s *Sampler) sample() {
-	jpeg := s.captureFrame()
+	jpeg, imgW, imgH := s.captureFrame()
 	if jpeg == nil {
 		return
 	}
@@ -103,7 +105,7 @@ func (s *Sampler) sample() {
 		for regionName, region := range s.regions {
 			var regionDets []Detection
 			for _, d := range filtered {
-				if matchesRegion(d, region) {
+				if matchesRegion(d, region, imgW, imgH) {
 					regionDets = append(regionDets, d)
 				}
 			}
@@ -149,15 +151,17 @@ type DetectionEvent struct {
 }
 
 // captureFrame grabs a single JPEG frame from the camera's stream.
-func (s *Sampler) captureFrame() []byte {
+// Returns the JPEG data and the native image dimensions (for polygon
+// matching — the bbox normalized [0..1] maps to these dimensions).
+func (s *Sampler) captureFrame() ([]byte, int, int) {
 	stream := streams.Get(s.camera)
 	if stream == nil {
-		return nil
+		return nil, 0, 0
 	}
 
 	cons := magic.NewKeyframe()
 	if err := stream.AddConsumer(cons); err != nil {
-		return nil
+		return nil, 0, 0
 	}
 
 	once := &core.OnceBuffer{}
@@ -166,33 +170,80 @@ func (s *Sampler) captureFrame() []byte {
 	stream.RemoveConsumer(cons)
 
 	if len(b) == 0 {
-		return nil
+		return nil, 0, 0
 	}
 
-	// Convert H264/H265 keyframe to JPEG via ffmpeg
+	// Convert H264/H265 keyframe to JPEG via ffmpeg at native resolution
 	switch cons.CodecName() {
 	case core.CodecH264, core.CodecH265:
-		jpeg, err := ffmpeg.JPEGWithScale(b, 640, -1)
+		jpegData, err := ffmpeg.JPEGWithScale(b, -1, -1)
 		if err != nil {
 			log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] transcode")
-			return nil
+			return nil, 0, 0
 		}
-		return jpeg
+		w, h := jpegDimensions(jpegData)
+		return jpegData, w, h
 	case core.CodecJPEG:
-		return b
+		w, h := jpegDimensions(b)
+		return b, w, h
 	default:
-		return nil
+		return nil, 0, 0
 	}
 }
 
+// jpegDimensions decodes a JPEG header to get width and height.
+func jpegDimensions(data []byte) (int, int) {
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
+}
+
 // matchesRegion checks if a detection's class is in the region's detect
-// list. Bounding box vs polygon intersection is left for future work —
-// for now, any detection with a matching class counts.
-func matchesRegion(d Detection, region *camera.Region) bool {
+// list AND the detection bbox center falls within the region's polygon.
+// Polygon coordinates are in image pixels; bbox is normalized [0..1].
+// We need the image dimensions to convert between the two.
+func matchesRegion(d Detection, region *camera.Region, imgW, imgH int) bool {
+	// Check class first (fast path)
+	classMatch := false
 	for _, cls := range region.Detect {
 		if cls == d.Class {
-			return true
+			classMatch = true
+			break
 		}
 	}
-	return false
+	if !classMatch {
+		return false
+	}
+
+	// Check if bbox center is inside the polygon
+	if len(region.Polygon) < 3 || imgW <= 0 || imgH <= 0 {
+		return classMatch // no valid polygon, just use class match
+	}
+
+	// Bbox center in pixel coordinates
+	cx := float64(d.BBox[0]+d.BBox[2]) / 2 * float64(imgW)
+	cy := float64(d.BBox[1]+d.BBox[3]) / 2 * float64(imgH)
+
+	return pointInPolygon(cx, cy, region.Polygon)
+}
+
+// pointInPolygon checks if point (px,py) is inside a polygon using
+// ray casting algorithm. Polygon points are in pixel coordinates.
+func pointInPolygon(px, py float64, polygon [][2]int) bool {
+	n := len(polygon)
+	inside := false
+	j := n - 1
+	for i := 0; i < n; i++ {
+		xi, yi := float64(polygon[i][0]), float64(polygon[i][1])
+		xj, yj := float64(polygon[j][0]), float64(polygon[j][1])
+
+		if ((yi > py) != (yj > py)) &&
+			(px < (xj-xi)*(py-yi)/(yj-yi)+xi) {
+			inside = !inside
+		}
+		j = i
+	}
+	return inside
 }
