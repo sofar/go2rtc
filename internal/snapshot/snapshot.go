@@ -318,24 +318,15 @@ func apiSessionCameras(w http.ResponseWriter, r *http.Request) {
 	api.ResponseJSON(w, result)
 }
 
-// getRecentDetections returns detections from the last 5 seconds for a camera.
+// getRecentDetections returns the most recent detections for a camera
+// from the stored event buffer (last 5 seconds).
 func getRecentDetections(cameraName string) []inference.Detection {
-	if events.Default == nil {
+	e := events.GetRecentByCamera(events.TypeDetection, cameraName, 5*time.Second)
+	if e == nil {
 		return nil
 	}
-
-	// Check recent events from the bus
-	ch := events.Default.Subscribe(events.Filter{Type: events.TypeDetection, Camera: cameraName}, 1)
-	defer events.Default.Unsubscribe(ch)
-
-	// Non-blocking read of most recent detection
-	select {
-	case e := <-ch:
-		if de, ok := e.Data.(inference.DetectionEvent); ok {
-			return de.Detections
-		}
-	case <-time.After(100 * time.Millisecond):
+	if de, ok := e.Data.(inference.DetectionEvent); ok {
+		return de.Detections
 	}
-
 	return nil
 }

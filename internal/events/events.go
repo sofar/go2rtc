@@ -132,6 +132,26 @@ func apiEvents(w http.ResponseWriter, r *http.Request) {
 	api.ResponseJSON(w, result)
 }
 
+// GetRecentByCamera returns the most recent event matching a type and camera
+// from the stored event buffer. Returns nil if none found within maxAge.
+func GetRecentByCamera(eventType, cameraName string, maxAge time.Duration) *Event {
+	recentMu.RLock()
+	defer recentMu.RUnlock()
+
+	cutoff := time.Now().Add(-maxAge)
+	// Search backwards (newest first)
+	for i := len(recentEvents) - 1; i >= 0; i-- {
+		e := recentEvents[i]
+		if e.Timestamp.Before(cutoff) {
+			break // events are chronological, no point searching further
+		}
+		if e.Type == eventType && e.Camera == cameraName {
+			return e
+		}
+	}
+	return nil
+}
+
 // apiSessions returns active and recently ended sessions.
 func apiSessions(w http.ResponseWriter, r *http.Request) {
 	if DefaultTracker == nil {
