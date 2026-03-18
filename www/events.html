@@ -27,6 +27,47 @@
         .confidence { color: #666; font-size: 12px; }
         td.time { white-space: nowrap; font-family: monospace; font-size: 13px; }
         #count { color: #888; }
+        .region-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .region-card {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 10px 14px;
+        }
+        .region-card h4 {
+            margin: 0 0 6px 0;
+            font-size: 15px;
+        }
+        .region-card .cameras-list {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+        .region-card .det-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+        }
+        .det-tag {
+            display: inline-block;
+            padding: 1px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+        }
+        .det-tag.person { background: #e74c3c; }
+        .det-tag.car { background: #3498db; }
+        .det-tag.dog { background: #8e44ad; }
+        .det-tag.cat { background: #27ae60; }
+        .det-tag.bird { background: #16a085; }
+        .det-tag.truck { background: #2c3e50; }
+        .det-tag.default { background: #e67e22; }
+        .region-card .quiet { color: #bbb; font-style: italic; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -45,9 +86,15 @@
         <select id="camera-filter">
             <option value="">all cameras</option>
         </select>
+        <select id="region-filter">
+            <option value="">all regions</option>
+        </select>
         <label><input type="checkbox" id="live" checked> live updates</label>
         <span id="count"></span>
     </div>
+
+    <div id="region-summary"></div>
+
     <table>
         <thead>
         <tr>
@@ -65,11 +112,19 @@
     const tbody = document.getElementById('events');
     const typeFilter = document.getElementById('type-filter');
     const cameraFilter = document.getElementById('camera-filter');
+    const regionFilter = document.getElementById('region-filter');
+    const regionSummary = document.getElementById('region-summary');
     const countEl = document.getElementById('count');
     let knownCameras = new Set();
+    let knownRegions = new Set();
 
     function badgeClass(type) {
         return 'badge badge-' + (type || '').replace(/[^a-z_]/g, '');
+    }
+
+    function detTagClass(cls) {
+        const known = ['person','car','dog','cat','bird','truck'];
+        return 'det-tag ' + (known.includes(cls) ? cls : 'default');
     }
 
     function formatTime(ts) {
@@ -83,8 +138,8 @@
 
         if (ev.type === 'detection' && data.detections) {
             const dets = data.detections.map(d =>
-                `${d.class} <span class="confidence">${(d.confidence * 100).toFixed(0)}%</span>`
-            ).join(', ');
+                `<span class="${detTagClass(d.class)}">${d.class} ${(d.confidence * 100).toFixed(0)}%</span>`
+            ).join(' ');
             const region = data.region ? ` <span class="confidence">[${data.region}]</span>` : '';
             return dets + region;
         }
@@ -111,10 +166,10 @@
         if (cam) url.searchParams.set('camera', cam);
 
         const res = await fetch(url, {cache: 'no-cache'});
-        const events = await res.json();
+        const allEvents = await res.json();
 
-        // Update camera filter dropdown
-        events.forEach(e => {
+        // Update filter dropdowns
+        allEvents.forEach(e => {
             if (e.camera && !knownCameras.has(e.camera)) {
                 knownCameras.add(e.camera);
                 const opt = document.createElement('option');
@@ -122,12 +177,28 @@
                 opt.textContent = e.camera;
                 cameraFilter.appendChild(opt);
             }
+            if (e.data && e.data.region && !knownRegions.has(e.data.region)) {
+                knownRegions.add(e.data.region);
+                const opt = document.createElement('option');
+                opt.value = e.data.region;
+                opt.textContent = e.data.region;
+                regionFilter.appendChild(opt);
+            }
         });
 
-        countEl.textContent = `${events.length} events`;
+        // Apply region filter client-side
+        const regionVal = regionFilter.value;
+        const filtered = regionVal
+            ? allEvents.filter(e => e.data && e.data.region === regionVal)
+            : allEvents;
 
-        // Render newest first
-        const reversed = events.slice().reverse();
+        countEl.textContent = `${filtered.length} events`;
+
+        // Build region summary from last 60 seconds
+        buildRegionSummary(allEvents);
+
+        // Render table newest first
+        const reversed = filtered.slice().reverse();
         tbody.innerHTML = reversed.map(ev => `
             <tr>
                 <td class="time">${formatTime(ev.timestamp)}</td>
@@ -138,8 +209,47 @@
         `).join('');
     }
 
+    function buildRegionSummary(events) {
+        const cutoff = Date.now() - 60000;
+        // {region: {cameras: Set, classes: {class: count}}}
+        const regions = {};
+
+        events.forEach(ev => {
+            if (ev.type !== 'detection' || !ev.data || !ev.data.region) return;
+            if (new Date(ev.timestamp).getTime() < cutoff) return;
+
+            const r = ev.data.region;
+            if (!regions[r]) regions[r] = {cameras: new Set(), classes: {}};
+            regions[r].cameras.add(ev.camera);
+            (ev.data.detections || []).forEach(d => {
+                regions[r].classes[d.class] = (regions[r].classes[d.class] || 0) + 1;
+            });
+        });
+
+        const names = Object.keys(regions).sort();
+        if (names.length === 0) {
+            regionSummary.innerHTML = '';
+            return;
+        }
+
+        regionSummary.innerHTML = '<div class="region-grid">' + names.map(name => {
+            const r = regions[name];
+            const cams = Array.from(r.cameras).join(', ');
+            const tags = Object.entries(r.classes)
+                .sort((a, b) => b[1] - a[1])
+                .map(([cls, n]) => `<span class="${detTagClass(cls)}">${cls} ${n}</span>`)
+                .join('');
+            return `<div class="region-card" onclick="document.getElementById('region-filter').value='${name}'; reload();" style="cursor:pointer">
+                <h4>${name}</h4>
+                <div class="cameras-list">${cams}</div>
+                <div class="det-tags">${tags || '<span class="quiet">quiet</span>'}</div>
+            </div>`;
+        }).join('') + '</div>';
+    }
+
     typeFilter.addEventListener('change', reload);
     cameraFilter.addEventListener('change', reload);
+    regionFilter.addEventListener('change', reload);
 
     reload();
     setInterval(() => {
