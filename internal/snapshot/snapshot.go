@@ -81,7 +81,13 @@ func apiSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	// Region cropping
+	// Annotate BEFORE cropping so bbox coordinates (which are in
+	// full-frame space) align with the full-frame image.
+	if q.Get("annotate") == "true" {
+		jpeg_data = annotateDetections(jpeg_data, name)
+	}
+
+	// Region cropping (after annotation)
 	if regionName := q.Get("region"); regionName != "" {
 		if cam.Regions == nil {
 			http.Error(w, "no regions configured for camera", http.StatusBadRequest)
@@ -98,11 +104,6 @@ func apiSnapshot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jpeg_data = cropped
-	}
-
-	// Detection annotation
-	if q.Get("annotate") == "true" {
-		jpeg_data = annotateDetections(jpeg_data, name)
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
