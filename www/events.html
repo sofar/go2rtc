@@ -224,12 +224,15 @@
         const cls = isActive ? 'active' : 'ended';
         const conf = (s.peak_confidence * 100).toFixed(0);
         const endInfo = isActive ? '' : ` &middot; ended ${formatTime(s.end || s.last_seen)}`;
-        return `<div class="session-row ${cls}">
+        const cameras = (s.cameras || [s.camera]).join(', ');
+        const href = `session.html?region=${encodeURIComponent(s.region)}&class=${encodeURIComponent(s.class)}`;
+        return `<a href="${href}" style="text-decoration:none; color:inherit">
+        <div class="session-row ${cls}">
             <span class="${detTagClass(s.class)}">${s.class}</span>
             <span class="session-dur">${dur}</span>
-            <span class="session-meta">${s.region} &middot; ${s.camera} &middot; ${s.detection_count} det &middot; ${conf}%${endInfo}</span>
+            <span class="session-meta">${s.region} &middot; ${cameras} &middot; ${s.detection_count} det &middot; ${conf}%${endInfo}</span>
             <span class="session-time">${startTime}</span>
-        </div>`;
+        </div></a>`;
     }
 
     function buildRegionSummary(activeSessions) {

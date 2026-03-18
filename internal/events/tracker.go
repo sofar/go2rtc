@@ -19,15 +19,18 @@ const (
 type Session struct {
 	ID             string    `json:"id"`
 	Camera         string    `json:"camera"`
+	Cameras        []string  `json:"cameras"`          // all cameras that contributed
 	Region         string    `json:"region"`
 	Class          string    `json:"class"`
 	Start          time.Time `json:"start"`
 	LastSeen       time.Time `json:"last_seen"`
 	End            time.Time `json:"end,omitempty"`
-	Duration       float64   `json:"duration"`        // seconds
+	Duration       float64   `json:"duration"`         // seconds
 	PeakConfidence float32   `json:"peak_confidence"`
 	DetectionCount int       `json:"detection_count"`
 	Active         bool      `json:"active"`
+
+	camerasSet map[string]bool `json:"-"` // internal dedup
 }
 
 // sessionKey uniquely identifies a session by region + class.
@@ -177,6 +180,7 @@ func (t *Tracker) handleDetection(e *Event) {
 			s = &Session{
 				ID:             fmt.Sprintf("%s-%d", now.Format("20060102-150405"), t.seqID),
 				Camera:         e.Camera,
+				Cameras:        []string{e.Camera},
 				Region:         det.Region,
 				Class:          det.Class,
 				Start:          now,
@@ -184,6 +188,7 @@ func (t *Tracker) handleDetection(e *Event) {
 				PeakConfidence: det.Confidence,
 				DetectionCount: 1,
 				Active:         true,
+				camerasSet:     map[string]bool{e.Camera: true},
 			}
 			t.active[key] = s
 
@@ -198,8 +203,10 @@ func (t *Tracker) handleDetection(e *Event) {
 			if det.Confidence > s.PeakConfidence {
 				s.PeakConfidence = det.Confidence
 			}
-			if e.Camera != s.Camera {
-				s.Camera = e.Camera
+			s.Camera = e.Camera
+			if !s.camerasSet[e.Camera] {
+				s.camerasSet[e.Camera] = true
+				s.Cameras = append(s.Cameras, e.Camera)
 			}
 		}
 	}

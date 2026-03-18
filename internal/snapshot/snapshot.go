@@ -43,6 +43,7 @@ func Init() {
 	}
 
 	api.HandleFunc("api/snapshot/", apiSnapshot)
+	api.HandleFunc("api/session/cameras", apiSessionCameras)
 }
 
 func apiSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +294,28 @@ func drawFilledRect(img *image.RGBA, x1, y1, x2, y2 int, col color.RGBA) {
 			}
 		}
 	}
+}
+
+// apiSessionCameras returns a JSON list of cameras that have a given region.
+// Used by the UI to know which cameras to fetch annotated snapshots from.
+func apiSessionCameras(w http.ResponseWriter, r *http.Request) {
+	region := r.URL.Query().Get("region")
+	if region == "" {
+		http.Error(w, "region parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var result []string
+	for _, cam := range camera.All() {
+		if cam.Regions == nil {
+			continue
+		}
+		if _, ok := cam.Regions[region]; ok {
+			result = append(result, cam.Name)
+		}
+	}
+
+	api.ResponseJSON(w, result)
 }
 
 // getRecentDetections returns detections from the last 5 seconds for a camera.

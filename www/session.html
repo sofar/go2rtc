@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>session - go2rtc</title>
+    <style>
+        .session-info {
+            padding: 10px 14px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+        }
+        .session-info .class-tag {
+            font-size: 18px;
+            font-weight: bold;
+            padding: 4px 14px;
+            border-radius: 12px;
+            color: white;
+        }
+        .class-tag.person { background: #e74c3c; }
+        .class-tag.car { background: #3498db; }
+        .class-tag.dog { background: #8e44ad; }
+        .class-tag.cat { background: #27ae60; }
+        .class-tag.bird { background: #16a085; }
+        .class-tag.truck { background: #2c3e50; }
+        .class-tag.default { background: #e67e22; }
+        .session-info .meta { color: #666; font-size: 14px; }
+        .session-info .dur {
+            font-family: monospace;
+            font-size: 20px;
+            font-weight: bold;
+        }
+        .status-active { color: #2a2; font-weight: bold; }
+        .status-ended { color: #888; }
+
+        .snapshots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+            gap: 12px;
+        }
+        .snap-card {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .snap-card img {
+            width: 100%;
+            display: block;
+            background: #222;
+            min-height: 200px;
+        }
+        .snap-card .snap-label {
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .snap-card .snap-meta {
+            padding: 0 12px 8px;
+            font-size: 12px;
+            color: #666;
+        }
+        .controls {
+            margin-bottom: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+
+<script src="main.js"></script>
+
+<main>
+    <div class="controls">
+        <a href="events.html">&larr; back to sessions</a>
+        <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
+    </div>
+    <div id="session-info" class="session-info">Loading...</div>
+    <div class="snapshots-grid" id="snapshots"></div>
+</main>
+
+<script>
+    const params = new URLSearchParams(location.search);
+    const sessionRegion = params.get('region');
+    const sessionClass = params.get('class');
+    const infoDiv = document.getElementById('session-info');
+    const snapshotsDiv = document.getElementById('snapshots');
+
+    function tagClass(cls) {
+        const known = ['person','car','dog','cat','bird','truck'];
+        return 'class-tag ' + (known.includes(cls) ? cls : 'default');
+    }
+
+    function formatDuration(sec) {
+        if (sec < 60) return sec.toFixed(0) + 's';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return m + 'm' + (s > 0 ? s + 's' : '');
+    }
+
+    function formatTime(ts) {
+        const d = new Date(ts);
+        return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    }
+
+    async function loadSession() {
+        // Find the session matching region+class
+        const res = await fetch('api/sessions', {cache: 'no-cache'});
+        const data = await res.json();
+
+        const all = [...(data.active || []), ...(data.recent || [])];
+        const session = all.find(s => s.region === sessionRegion && s.class === sessionClass);
+
+        if (!session) {
+            infoDiv.innerHTML = `No session found for <b>${sessionClass}</b> in <b>${sessionRegion}</b>`;
+            return;
+        }
+
+        const statusClass = session.active ? 'status-active' : 'status-ended';
+        const statusText = session.active ? 'ACTIVE' : 'ended';
+        const dur = formatDuration(session.duration);
+        const conf = (session.peak_confidence * 100).toFixed(0);
+        const cameras = (session.cameras || [session.camera]).join(', ');
+
+        infoDiv.innerHTML = `
+            <span class="${tagClass(session.class)}">${session.class}</span>
+            <span class="dur">${dur}</span>
+            <span class="${statusClass}">${statusText}</span>
+            <span class="meta">
+                region: <b>${session.region}</b> &middot;
+                cameras: <b>${cameras}</b> &middot;
+                ${session.detection_count} detections &middot;
+                ${conf}% peak &middot;
+                started ${formatTime(session.start)}
+            </span>
+        `;
+
+        // Load annotated snapshots from all cameras that have this region
+        loadSnapshots(session);
+    }
+
+    let regionCameras = null;
+
+    async function loadSnapshots(session) {
+        // Get all cameras that have this region (cached after first call)
+        if (!regionCameras) {
+            const res = await fetch(`api/session/cameras?region=${encodeURIComponent(sessionRegion)}`, {cache: 'no-cache'});
+            regionCameras = await res.json();
+        }
+
+        regionCameras.forEach(camName => {
+            const src = encodeURIComponent(camName);
+            let card = snapshotsDiv.querySelector(`.snap-card[data-camera="${camName}"]`);
+
+            if (!card) {
+                card = document.createElement('div');
+                card.className = 'snap-card';
+                card.dataset.camera = camName;
+                card.innerHTML = `
+                    <img>
+                    <div class="snap-label"></div>
+                    <div class="snap-meta"></div>
+                `;
+                snapshotsDiv.appendChild(card);
+            }
+
+            const img = card.querySelector('img');
+            if (document.getElementById('autorefresh').checked) {
+                img.src = `api/snapshot/${src}?region=${encodeURIComponent(sessionRegion)}&annotate=true&_t=${Date.now()}`;
+            } else if (!img.src || img.src.includes('undefined')) {
+                img.src = `api/snapshot/${src}?region=${encodeURIComponent(sessionRegion)}&annotate=true`;
+            }
+
+            card.querySelector('.snap-label').textContent = camName;
+
+            const inSession = (session.cameras || [session.camera]).includes(camName);
+            card.querySelector('.snap-meta').textContent = inSession
+                ? 'contributing to this session'
+                : 'has this region (no detection)';
+        });
+    }
+
+    if (!sessionRegion || !sessionClass) {
+        infoDiv.innerHTML = 'Missing region or class parameter. <a href="events.html">Go back</a>';
+    } else {
+        loadSession();
+        setInterval(() => {
+            if (document.getElementById('autorefresh').checked) loadSession();
+        }, 2000);
+    }
+</script>
+
+</body>
+</html>
