@@ -38,11 +38,14 @@ func RegisterSnapshotCapture(fn SnapshotCaptureFunc) {
 	snapshotCapture = fn
 }
 
+const maxSnapshotsPerSession = 50
+
 type sessionSnaps struct {
 	sessionID string
 	dir       string
 	count     int
 	lastSnap  time.Time
+	startTime time.Time
 	cameras   []string
 	region    string
 }
@@ -142,6 +145,7 @@ func (s *SnapshotStore) onSessionStart(sess *Session) {
 	s.sessions[key] = &sessionSnaps{
 		sessionID: sess.ID,
 		dir:       dir,
+		startTime: time.Now(),
 		cameras:   sess.Cameras,
 		region:    sess.Region,
 	}
@@ -181,7 +185,11 @@ func (s *SnapshotStore) captureActive() {
 	var toCapture []sessionKey
 	now := time.Now()
 	for key, snaps := range s.sessions {
-		if now.Sub(snaps.lastSnap) >= s.interval {
+		if snaps.count >= maxSnapshotsPerSession {
+			continue
+		}
+		interval := s.adaptiveInterval(now.Sub(snaps.startTime))
+		if now.Sub(snaps.lastSnap) >= interval {
 			toCapture = append(toCapture, key)
 		}
 	}
@@ -189,6 +197,21 @@ func (s *SnapshotStore) captureActive() {
 
 	for _, key := range toCapture {
 		s.captureSnapshot(key)
+	}
+}
+
+// adaptiveInterval returns the snapshot interval based on session age:
+//   - First minute: every 5 seconds
+//   - Minutes 2-10: every 30 seconds
+//   - After 10 minutes: every 5 minutes
+func (s *SnapshotStore) adaptiveInterval(age time.Duration) time.Duration {
+	switch {
+	case age < time.Minute:
+		return s.interval // 5s default
+	case age < 10*time.Minute:
+		return 30 * time.Second
+	default:
+		return 5 * time.Minute
 	}
 }
 
