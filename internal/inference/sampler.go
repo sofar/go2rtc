@@ -5,39 +5,65 @@ import (
 	"image"
 	"image/draw"
 	"image/jpeg"
+	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/camera"
 	"github.com/AlexxIT/go2rtc/internal/events"
-	"github.com/AlexxIT/go2rtc/internal/ffmpeg"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
-	"github.com/AlexxIT/go2rtc/pkg/magic"
+	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h265"
+	"github.com/pion/rtp"
 )
 
-// Sampler periodically captures frames from a camera stream, runs
-// detection, and publishes results to the event bus.
+// Sampler is a persistent core.Consumer that receives video keyframes
+// from a camera stream and periodically runs object detection on them.
+// Unlike the previous implementation, it stays attached to the stream
+// permanently — no add/remove consumer churn per frame.
 type Sampler struct {
-	camera  string
-	regions map[string]*camera.Region
-	backend Backend
+	core.Connection
+
+	camera         string
+	regions        map[string]*camera.Region
+	backend        Backend
 	bus            *events.Bus
 	minConf        float32
 	classThreshold map[string]float32
+	interval       time.Duration
 
-	interval time.Duration
-	stop     chan struct{}
+	// Latest keyframe data (written by packet handler, read by sampler)
+	mu          sync.Mutex
+	lastFrame   []byte // raw H264/H265 keyframe (AVCC format)
+	lastCodec   string
+	lastFrameAt time.Time
+
+	stop chan struct{}
 }
 
 // NewSampler creates a sampler for a camera.
 func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval time.Duration, minConf float32, classThreshold map[string]float32) *Sampler {
 	if interval <= 0 {
-		interval = time.Second / 3 // ~3 fps
+		interval = time.Second / 3
 	}
 	if minConf <= 0 {
 		minConf = 0.5
 	}
 	return &Sampler{
+		Connection: core.Connection{
+			ID:         core.NewID(),
+			FormatName: "inference",
+			Medias: []*core.Media{
+				{
+					Kind:      core.KindVideo,
+					Direction: core.DirectionSendonly,
+					Codecs: []*core.Codec{
+						{Name: core.CodecH264},
+						{Name: core.CodecH265},
+					},
+				},
+			},
+		},
 		camera:         cam.Name,
 		regions:        cam.Regions,
 		backend:        backend,
@@ -49,19 +75,89 @@ func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval t
 	}
 }
 
-// Start begins the sampling loop in a goroutine.
+func (s *Sampler) GetMedias() []*core.Media {
+	return s.Medias
+}
+
+func (s *Sampler) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
+	handler := core.NewSender(media, track.Codec)
+
+	switch track.Codec.Name {
+	case core.CodecH264:
+		handler.Handler = func(packet *rtp.Packet) {
+			if h264.IsKeyframe(packet.Payload) {
+				s.storeKeyframe(packet.Payload, core.CodecH264)
+			}
+		}
+		if track.Codec.IsRTP() {
+			handler.Handler = h264.RTPDepay(track.Codec, handler.Handler)
+		} else {
+			handler.Handler = h264.RepairAVCC(track.Codec, handler.Handler)
+		}
+
+	case core.CodecH265:
+		handler.Handler = func(packet *rtp.Packet) {
+			if h265.IsKeyframe(packet.Payload) {
+				s.storeKeyframe(packet.Payload, core.CodecH265)
+			}
+		}
+		if track.Codec.IsRTP() {
+			handler.Handler = h265.RTPDepay(track.Codec, handler.Handler)
+		} else {
+			handler.Handler = h265.RepairAVCC(track.Codec, handler.Handler)
+		}
+
+	default:
+		return nil // ignore audio etc.
+	}
+
+	handler.HandleRTP(track)
+	s.Senders = append(s.Senders, handler)
+	return nil
+}
+
+func (s *Sampler) storeKeyframe(payload []byte, codec string) {
+	data := make([]byte, len(payload))
+	copy(data, payload)
+
+	s.mu.Lock()
+	s.lastFrame = data
+	s.lastCodec = codec
+	s.lastFrameAt = time.Now()
+	s.mu.Unlock()
+
+}
+
+// Start begins the sampling loop and attaches to the stream.
 func (s *Sampler) Start() {
-	go s.run()
+	stream := streams.Get(s.camera)
+	if stream == nil {
+		log.Error().Str("camera", s.camera).Msg("[inference] stream not found")
+		return
+	}
+
+	if err := stream.AddConsumer(s); err != nil {
+		log.Error().Err(err).Str("camera", s.camera).Msg("[inference] add consumer")
+		return
+	}
+
+	log.Debug().Str("camera", s.camera).Int("senders", len(s.Senders)).Msg("[inference] attached as consumer")
+
+	go s.run(stream)
 }
 
-// Stop terminates the sampling loop.
-func (s *Sampler) Stop() {
+// Stop terminates the sampling loop and detaches from the stream.
+func (s *Sampler) Stop() error {
 	close(s.stop)
+	for _, sender := range s.Senders {
+		sender.Close()
+	}
+	return nil
 }
 
-func (s *Sampler) run() {
-	// Wait for the stream to establish before starting inference
-	time.Sleep(5 * time.Second)
+func (s *Sampler) run(stream *streams.Stream) {
+	// Wait for first keyframe
+	time.Sleep(3 * time.Second)
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -69,6 +165,7 @@ func (s *Sampler) run() {
 	for {
 		select {
 		case <-s.stop:
+			stream.RemoveConsumer(s)
 			return
 		case <-ticker.C:
 			s.sample()
@@ -76,19 +173,39 @@ func (s *Sampler) run() {
 	}
 }
 
+// captureJPEG is set by the snapshot module to provide JPEG frame capture.
+var captureJPEG func(camera string) []byte
+
+// RegisterFrameCapture allows the snapshot module to provide its
+// capture function to the inference sampler.
+func RegisterFrameCapture(fn func(camera string) []byte) {
+	captureJPEG = fn
+}
+
 func (s *Sampler) sample() {
-	fullJPEG, _, _ := s.captureFrame()
-	if fullJPEG == nil {
+	// Check that the stream is alive (we have recent keyframes)
+	s.mu.Lock()
+	frameAge := time.Since(s.lastFrameAt)
+	s.mu.Unlock()
+
+	if frameAge > 10*time.Second {
+		return // stream not active
+	}
+
+	// Use the snapshot module's capture pipeline — it handles
+	// codec negotiation, ffmpeg transcode, and produces a proper JPEG.
+	if captureJPEG == nil {
+		return
+	}
+	jpegData := captureJPEG(s.camera)
+	if len(jpegData) == 0 {
 		return
 	}
 
 	if len(s.regions) > 0 {
-		// Per-region inference: crop each region from the native frame,
-		// run detection on the crop. The object fills the model input
-		// properly instead of being a tiny part of the full frame.
-		s.sampleRegions(fullJPEG)
+		s.sampleRegions(jpegData)
 	} else {
-		s.sampleFullFrame(fullJPEG)
+		s.sampleFullFrame(jpegData)
 	}
 }
 
@@ -106,10 +223,8 @@ func (s *Sampler) sampleFullFrame(jpegData []byte) {
 }
 
 func (s *Sampler) sampleRegions(fullJPEG []byte) {
-	// Decode the full frame once
 	img, err := jpeg.Decode(bytes.NewReader(fullJPEG))
 	if err != nil {
-		log.Warn().Err(err).Str("camera", s.camera).Int("jpeg_len", len(fullJPEG)).Msg("[inference] decode full frame failed")
 		return
 	}
 
@@ -118,29 +233,24 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 			continue
 		}
 
-		// Crop to region bounding box
 		bounds := polygonBounds(region.Polygon)
 		cropped := cropImage(img, bounds)
 		if cropped == nil {
 			continue
 		}
 
-		// Encode crop as JPEG for the backend
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, cropped, &jpeg.Options{Quality: 85}); err != nil {
 			continue
 		}
 		cropJPEG := buf.Bytes()
 
-		// Run detection on the crop
 		detections, err := s.backend.Detect(cropJPEG)
 		if err != nil {
 			log.Debug().Err(err).Str("camera", s.camera).Str("region", regionName).Msg("[inference] detect")
 			continue
 		}
 
-
-		// Filter by confidence and class
 		var regionDets []Detection
 		for _, d := range detections {
 			threshold := s.minConf
@@ -150,7 +260,6 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 			if d.Confidence < threshold {
 				continue
 			}
-			// Check class matches region's detect list
 			classMatch := false
 			for _, cls := range region.Detect {
 				if cls == d.Class {
@@ -162,8 +271,6 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 				continue
 			}
 
-			// Remap bbox from crop coordinates back to full frame
-			// normalized coordinates
 			imgW := img.Bounds().Dx()
 			imgH := img.Bounds().Dy()
 			d.BBox = remapBBox(d.BBox, bounds, imgW, imgH)
@@ -219,77 +326,11 @@ type DetectionEvent struct {
 	Region     string      `json:"region,omitempty"`
 	Detections []Detection `json:"detections"`
 	Timestamp  time.Time   `json:"timestamp"`
-	FrameJPEG  []byte      `json:"-"` // not serialized to JSON
+	FrameJPEG  []byte      `json:"-"`
 }
 
-// captureFrame grabs a single JPEG frame from the camera's stream.
-// Returns the JPEG data and the native image dimensions. Uses a
-// timeout to avoid blocking forever when the stream is busy.
-func (s *Sampler) captureFrame() ([]byte, int, int) {
-	stream := streams.Get(s.camera)
-	if stream == nil {
-		return nil, 0, 0
-	}
+// --- geometry helpers ---
 
-	cons := magic.NewKeyframe()
-	if err := stream.AddConsumer(cons); err != nil {
-		return nil, 0, 0
-	}
-
-	// Capture with timeout — the stream may be busy with other consumers
-	type result struct {
-		data []byte
-		codec string
-	}
-	ch := make(chan result, 1)
-	go func() {
-		once := &core.OnceBuffer{}
-		_, _ = cons.WriteTo(once)
-		ch <- result{data: once.Buffer(), codec: cons.CodecName()}
-	}()
-
-	var r result
-	select {
-	case r = <-ch:
-	case <-time.After(5 * time.Second):
-		stream.RemoveConsumer(cons)
-		log.Debug().Str("camera", s.camera).Msg("[inference] frame capture timeout")
-		return nil, 0, 0
-	}
-	stream.RemoveConsumer(cons)
-
-	if len(r.data) == 0 {
-		return nil, 0, 0
-	}
-
-	// Convert H264/H265 keyframe to JPEG via ffmpeg at native resolution
-	switch r.codec {
-	case core.CodecH264, core.CodecH265:
-		jpegData, err := ffmpeg.JPEGWithScale(r.data, -1, -1)
-		if err != nil {
-			log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] transcode")
-			return nil, 0, 0
-		}
-		w, h := jpegDimensions(jpegData)
-		return jpegData, w, h
-	case core.CodecJPEG:
-		w, h := jpegDimensions(r.data)
-		return r.data, w, h
-	default:
-		return nil, 0, 0
-	}
-}
-
-// jpegDimensions decodes a JPEG header to get width and height.
-func jpegDimensions(data []byte) (int, int) {
-	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return 0, 0
-	}
-	return cfg.Width, cfg.Height
-}
-
-// polygonBounds returns the bounding rectangle of a polygon.
 func polygonBounds(polygon [][2]int) image.Rectangle {
 	if len(polygon) == 0 {
 		return image.Rectangle{}
@@ -305,7 +346,6 @@ func polygonBounds(polygon [][2]int) image.Rectangle {
 	return image.Rect(minX, minY, maxX, maxY)
 }
 
-// cropImage extracts a rectangular region from an image.
 func cropImage(img image.Image, bounds image.Rectangle) image.Image {
 	imgBounds := img.Bounds()
 	bounds = bounds.Intersect(imgBounds)
@@ -320,14 +360,11 @@ func cropImage(img image.Image, bounds image.Rectangle) image.Image {
 		return si.SubImage(bounds)
 	}
 
-	// Fallback: copy to new RGBA
 	dst := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	draw.Draw(dst, dst.Bounds(), img, bounds.Min, draw.Src)
 	return dst
 }
 
-// remapBBox converts a bbox from crop-local normalized coordinates to
-// full-frame normalized coordinates.
 func remapBBox(bbox [4]float32, cropBounds image.Rectangle, imgW, imgH int) [4]float32 {
 	cx := float64(cropBounds.Min.X)
 	cy := float64(cropBounds.Min.Y)
@@ -344,37 +381,6 @@ func remapBBox(bbox [4]float32, cropBounds image.Rectangle, imgW, imgH int) [4]f
 	}
 }
 
-// matchesRegion checks if a detection's class is in the region's detect
-// list AND the detection bbox center falls within the region's polygon.
-// Polygon coordinates are in image pixels; bbox is normalized [0..1].
-// We need the image dimensions to convert between the two.
-func matchesRegion(d Detection, region *camera.Region, imgW, imgH int) bool {
-	// Check class first (fast path)
-	classMatch := false
-	for _, cls := range region.Detect {
-		if cls == d.Class {
-			classMatch = true
-			break
-		}
-	}
-	if !classMatch {
-		return false
-	}
-
-	// Check if bbox center is inside the polygon
-	if len(region.Polygon) < 3 || imgW <= 0 || imgH <= 0 {
-		return classMatch // no valid polygon, just use class match
-	}
-
-	// Bbox center in pixel coordinates
-	cx := float64(d.BBox[0]+d.BBox[2]) / 2 * float64(imgW)
-	cy := float64(d.BBox[1]+d.BBox[3]) / 2 * float64(imgH)
-
-	return pointInPolygon(cx, cy, region.Polygon)
-}
-
-// pointInPolygon checks if point (px,py) is inside a polygon using
-// ray casting algorithm. Polygon points are in pixel coordinates.
 func pointInPolygon(px, py float64, polygon [][2]int) bool {
 	n := len(polygon)
 	inside := false
@@ -390,4 +396,12 @@ func pointInPolygon(px, py float64, polygon [][2]int) bool {
 		j = i
 	}
 	return inside
+}
+
+func jpegDimensions(data []byte) (int, int) {
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }

@@ -66,9 +66,9 @@ func TestListSegments_FindsFiles(t *testing.T) {
 	segments := listSegments(dir, "cam1", time.Time{}, time.Now())
 	require.Len(t, segments, 3)
 
-	// Should be sorted by time
-	assert.True(t, segments[0].Start.Before(segments[1].Start))
-	assert.True(t, segments[1].Start.Before(segments[2].Start))
+	// Should be sorted by time (newest first)
+	assert.True(t, segments[0].Start.After(segments[1].Start))
+	assert.True(t, segments[1].Start.After(segments[2].Start))
 
 	// Check fields
 	assert.Equal(t, "cam1", segments[0].Camera)

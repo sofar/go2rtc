@@ -45,6 +45,9 @@ func Init() {
 	api.HandleFunc("api/snapshot/", apiSnapshot)
 	api.HandleFunc("api/session/cameras", apiSessionCameras)
 
+	// Register frame capture for inference sampler
+	inference.RegisterFrameCapture(captureJPEG)
+
 	// Register snapshot capture for session snapshot storage
 	events.RegisterSnapshotCapture(func(cameraName, region string) []byte {
 		jpeg_data := captureJPEG(cameraName)

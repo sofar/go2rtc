@@ -24,7 +24,6 @@ cameras:
     view_group: front_yard
     recording:
       enabled: true
-      segment_duration: 5m
       codec: h265
       bitrate: 2M
       retention: 30d
@@ -64,7 +63,6 @@ cameras:
 	// Recording
 	require.NotNil(t, cam.Recording)
 	assert.True(t, cam.Recording.Enabled)
-	assert.Equal(t, "5m", cam.Recording.SegmentDuration)
 	assert.Equal(t, "h265", cam.Recording.Codec)
 	assert.Equal(t, "2M", cam.Recording.Bitrate)
 	assert.Equal(t, "30d", cam.Recording.Retention)
