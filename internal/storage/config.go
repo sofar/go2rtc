@@ -11,6 +11,7 @@ import (
 type Config struct {
 	BasePath         string `yaml:"base_path" json:"base_path"`
 	DefaultRetention string `yaml:"default_retention" json:"default_retention"`
+	SegmentDuration  string `yaml:"segment_duration" json:"segment_duration"`
 }
 
 // Segment represents a single recorded file on disk.

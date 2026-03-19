@@ -53,16 +53,16 @@ func Init() {
 		return
 	}
 
+	segDur, err := parseDuration(cfg.Mod.SegmentDuration)
+	if err != nil {
+		log.Error().Err(err).Msg("[storage] invalid segment_duration")
+		return
+	}
+
 	// Start recording for each camera that has recording enabled
 	for _, cam := range camera.All() {
 		rec := cam.Recording
 		if rec == nil || !rec.Enabled {
-			continue
-		}
-
-		segDur, err := parseDuration(rec.SegmentDuration)
-		if err != nil {
-			log.Error().Err(err).Str("camera", cam.Name).Msg("[storage] invalid segment_duration")
 			continue
 		}
 
@@ -108,7 +108,7 @@ func Init() {
 		log.Info().
 			Str("camera", cam.Name).
 			Str("path", basePath).
-			Str("segment", rec.SegmentDuration).
+			Str("segment", cfg.Mod.SegmentDuration).
 			Msg("[storage] recording started")
 	}
 
