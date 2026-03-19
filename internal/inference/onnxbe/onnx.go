@@ -14,11 +14,17 @@ import (
 	"math"
 	"os"
 	"sort"
+	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
 
 const numClasses = 80
+
+var (
+	ortInit    sync.Once
+	ortInitErr error
+)
 
 // Detection represents a single detected object.
 type Detection struct {
@@ -49,9 +55,12 @@ func New(modelPath string, device string, nmsThreshold float32, inputSize int) (
 		inputSize = 640
 	}
 
-	ort.SetSharedLibraryPath(findOrtLib())
-	if err := ort.InitializeEnvironment(); err != nil {
-		return nil, fmt.Errorf("onnxbe: init environment: %w", err)
+	ortInit.Do(func() {
+		ort.SetSharedLibraryPath(findOrtLib())
+		ortInitErr = ort.InitializeEnvironment()
+	})
+	if ortInitErr != nil {
+		return nil, fmt.Errorf("onnxbe: init environment: %w", ortInitErr)
 	}
 
 	inSize := inputSize
@@ -146,7 +155,8 @@ func (b *Backend) Close() error {
 }
 
 // preprocess resizes the image to inputSize x inputSize and converts to
-// CHW float32 normalized to [0,1]. Uses letterboxing to preserve aspect ratio.
+// CHW float32 normalized to [0,1]. Uses letterboxing with bilinear
+// interpolation to match Python/OpenCV preprocessing.
 func preprocess(img image.Image, buf []float32, inputSize int) {
 	bounds := img.Bounds()
 	srcW := bounds.Dx()
@@ -164,25 +174,62 @@ func preprocess(img image.Image, buf []float32, inputSize int) {
 	}
 
 	planeSize := inputSize * inputSize
+	ox := bounds.Min.X
+	oy := bounds.Min.Y
 
 	for y := 0; y < newH; y++ {
-		srcY := int(float64(y) / scale)
-		if srcY >= srcH {
-			srcY = srcH - 1
+		// Bilinear source coordinate
+		sy := float64(y)/scale - 0.5
+		if sy < 0 {
+			sy = 0
 		}
+		y0 := int(sy)
+		y1 := y0 + 1
+		fy := float32(sy - float64(y0))
+		if y0 >= srcH {
+			y0 = srcH - 1
+		}
+		if y1 >= srcH {
+			y1 = srcH - 1
+		}
+
 		for x := 0; x < newW; x++ {
-			srcX := int(float64(x) / scale)
-			if srcX >= srcW {
-				srcX = srcW - 1
+			sx := float64(x)/scale - 0.5
+			if sx < 0 {
+				sx = 0
+			}
+			x0 := int(sx)
+			x1 := x0 + 1
+			fx := float32(sx - float64(x0))
+			if x0 >= srcW {
+				x0 = srcW - 1
+			}
+			if x1 >= srcW {
+				x1 = srcW - 1
 			}
 
-			r, g, b, _ := img.At(bounds.Min.X+srcX, bounds.Min.Y+srcY).RGBA()
+			// Read 4 source pixels
+			r00, g00, b00, _ := img.At(ox+x0, oy+y0).RGBA()
+			r10, g10, b10, _ := img.At(ox+x1, oy+y0).RGBA()
+			r01, g01, b01, _ := img.At(ox+x0, oy+y1).RGBA()
+			r11, g11, b11, _ := img.At(ox+x1, oy+y1).RGBA()
+
+			// Bilinear interpolation
+			ifx := 1 - fx
+			ify := 1 - fy
+			r := float32(r00>>8)*ifx*ify + float32(r10>>8)*fx*ify +
+				float32(r01>>8)*ifx*fy + float32(r11>>8)*fx*fy
+			g := float32(g00>>8)*ifx*ify + float32(g10>>8)*fx*ify +
+				float32(g01>>8)*ifx*fy + float32(g11>>8)*fx*fy
+			b := float32(b00>>8)*ifx*ify + float32(b10>>8)*fx*ify +
+				float32(b01>>8)*ifx*fy + float32(b11>>8)*fx*fy
+
 			dx := x + padX
 			dy := y + padY
 
-			buf[0*planeSize+dy*inputSize+dx] = float32(r>>8) / 255.0
-			buf[1*planeSize+dy*inputSize+dx] = float32(g>>8) / 255.0
-			buf[2*planeSize+dy*inputSize+dx] = float32(b>>8) / 255.0
+			buf[0*planeSize+dy*inputSize+dx] = r / 255.0
+			buf[1*planeSize+dy*inputSize+dx] = g / 255.0
+			buf[2*planeSize+dy*inputSize+dx] = b / 255.0
 		}
 	}
 }

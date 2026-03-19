@@ -23,7 +23,7 @@ require (
 	github.com/sigurn/crc8 v0.0.0-20220107193325-2243fe600f9f
 	github.com/stretchr/testify v1.11.1
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9
-	github.com/yalue/onnxruntime_go v1.17.0
+	github.com/yalue/onnxruntime_go v1.16.0
 	golang.org/x/crypto v0.48.0
 	golang.org/x/image v0.37.0
 	golang.org/x/net v0.50.0
