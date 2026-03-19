@@ -10,46 +10,47 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
-	"github.com/AlexxIT/go2rtc/pkg/mp4"
 	"github.com/pion/rtp"
 )
 
 // Recorder is a core.Consumer that writes incoming packets to segmented
-// MP4 files using go2rtc's native MP4 muxer.
+// files using a pluggable SegmentWriter (MP4, MPEG-TS, etc.).
 type Recorder struct {
 	core.Connection
 
 	camera   string
 	basePath string
 	segDur   time.Duration
+	format   string
 
-	muxer   *mp4.Muxer
+	writer  SegmentWriter
 	mu      sync.Mutex
 	started bool
 	closed  bool
 
 	// current segment state
-	file      *os.File
-	segStart  time.Time
-	segBytes  int64
-	initBytes []byte // cached MP4 init (ftyp+moov), rewritten per segment
+	file     *os.File
+	segStart time.Time
+	segBytes int64
 
 	// metrics
 	Segments int   `json:"segments"`
 	Bytes    int64 `json:"bytes"`
 }
 
-// NewRecorder creates a recorder for a camera. segDur controls how often
-// a new segment file is started (default 5 minutes).
-func NewRecorder(camera, basePath string, segDur time.Duration) *Recorder {
+// NewRecorder creates a recorder for a camera.
+func NewRecorder(camera, basePath string, segDur time.Duration, format string) *Recorder {
 	if segDur <= 0 {
 		segDur = 5 * time.Minute
+	}
+	if format == "" {
+		format = "mp4"
 	}
 
 	return &Recorder{
 		Connection: core.Connection{
 			ID:         core.NewID(),
-			FormatName: "mp4/record",
+			FormatName: format + "/record",
 			Medias: []*core.Media{
 				{
 					Kind:      core.KindVideo,
@@ -71,7 +72,8 @@ func NewRecorder(camera, basePath string, segDur time.Duration) *Recorder {
 		camera:   camera,
 		basePath: basePath,
 		segDur:   segDur,
-		muxer:    &mp4.Muxer{},
+		format:   format,
+		writer:   newWriter(format),
 	}
 }
 
@@ -80,8 +82,8 @@ func (r *Recorder) GetMedias() []*core.Media {
 }
 
 func (r *Recorder) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
-	trackID := byte(len(r.Senders))
 	codec := track.Codec.Clone()
+	trackID := r.writer.AddTrack(codec)
 	handler := core.NewSender(media, codec)
 
 	switch track.Codec.Name {
@@ -119,7 +121,6 @@ func (r *Recorder) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 		return errors.New("storage: unsupported codec: " + track.Codec.Name)
 	}
 
-	r.muxer.AddTrack(codec)
 	handler.HandleRTP(track)
 	r.Senders = append(r.Senders, handler)
 
@@ -134,7 +135,6 @@ func (r *Recorder) writePacket(trackID byte, packet *rtp.Packet, isKeyframe bool
 		return
 	}
 
-	// Start new segment on first keyframe or when segment duration exceeded
 	if isKeyframe {
 		if !r.started {
 			r.started = true
@@ -145,11 +145,10 @@ func (r *Recorder) writePacket(trackID byte, packet *rtp.Packet, isKeyframe bool
 	}
 
 	if r.file == nil {
-		return // waiting for first keyframe
+		return
 	}
 
-	b := r.muxer.GetPayload(trackID, packet)
-	n, err := r.file.Write(b)
+	n, err := r.writer.WritePacket(r.file, trackID, packet)
 	if err != nil {
 		log.Error().Err(err).Str("camera", r.camera).Msg("[storage] write")
 		return
@@ -158,9 +157,7 @@ func (r *Recorder) writePacket(trackID byte, packet *rtp.Packet, isKeyframe bool
 	r.Bytes += int64(n)
 }
 
-// rotateSegment closes the current segment file and opens a new one.
 func (r *Recorder) rotateSegment() {
-	// Close previous segment
 	if r.file != nil {
 		r.closeSegment()
 	}
@@ -172,26 +169,16 @@ func (r *Recorder) rotateSegment() {
 		return
 	}
 
-	path := segmentPath(r.basePath, r.camera, now)
+	ext := r.writer.Extension()
+	path := segmentDir(r.basePath, r.camera, now) + "/" + now.Format("15-04-05") + ext
 	f, err := os.Create(path)
 	if err != nil {
 		log.Error().Err(err).Str("path", path).Msg("[storage] create")
 		return
 	}
 
-	// Write MP4 init segment (ftyp + moov)
-	if r.initBytes == nil {
-		init, err := r.muxer.GetInit()
-		if err != nil {
-			log.Error().Err(err).Msg("[storage] get init")
-			f.Close()
-			os.Remove(path)
-			return
-		}
-		r.initBytes = init
-	}
-	if _, err := f.Write(r.initBytes); err != nil {
-		log.Error().Err(err).Msg("[storage] write init")
+	if err := r.writer.WriteHeader(f); err != nil {
+		log.Error().Err(err).Msg("[storage] write header")
 		f.Close()
 		os.Remove(path)
 		return
@@ -199,7 +186,7 @@ func (r *Recorder) rotateSegment() {
 
 	r.file = f
 	r.segStart = now
-	r.segBytes = int64(len(r.initBytes))
+	r.segBytes = 0
 	r.Segments++
 
 	log.Debug().Str("camera", r.camera).Str("path", path).Msg("[storage] new segment")

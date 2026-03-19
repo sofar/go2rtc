@@ -12,19 +12,19 @@ import (
 )
 
 func TestNewRecorder_DefaultSegDur(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0)
+	rec := NewRecorder("cam1", "/tmp/test", 0, "")
 	assert.Equal(t, 5*time.Minute, rec.segDur)
 	assert.Equal(t, "cam1", rec.camera)
 	assert.Equal(t, "/tmp/test", rec.basePath)
 }
 
 func TestNewRecorder_CustomSegDur(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 10*time.Minute)
+	rec := NewRecorder("cam1", "/tmp/test", 10*time.Minute, "")
 	assert.Equal(t, 10*time.Minute, rec.segDur)
 }
 
 func TestRecorder_GetMedias(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0)
+	rec := NewRecorder("cam1", "/tmp/test", 0, "")
 	medias := rec.GetMedias()
 	require.Len(t, medias, 2)
 
@@ -37,7 +37,7 @@ func TestRecorder_GetMedias(t *testing.T) {
 }
 
 func TestRecorder_Stop_NoFile(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0)
+	rec := NewRecorder("cam1", "/tmp/test", 0, "")
 	assert.NoError(t, rec.Stop())
 }
 

@@ -12,6 +12,7 @@ type Config struct {
 	BasePath         string `yaml:"base_path" json:"base_path"`
 	DefaultRetention string `yaml:"default_retention" json:"default_retention"`
 	SegmentDuration  string `yaml:"segment_duration" json:"segment_duration"`
+	Format           string `yaml:"format" json:"format"` // mp4 (default), ts, mkv
 }
 
 // Segment represents a single recorded file on disk.

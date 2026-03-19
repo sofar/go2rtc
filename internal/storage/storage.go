@@ -95,7 +95,7 @@ func Init() {
 			continue
 		}
 
-		recorder := NewRecorder(cam.Name, basePath, segDur)
+		recorder := NewRecorder(cam.Name, basePath, segDur, cfg.Mod.Format)
 		if err := stream.AddConsumer(recorder); err != nil {
 			log.Error().Err(err).Str("camera", cam.Name).Msg("[storage] add consumer")
 			continue
@@ -175,13 +175,29 @@ func apiPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := segmentPath(rec.basePath, cameraName, t)
-	if _, err := os.Stat(path); err != nil {
+	// Find the segment file (could be .mp4, .ts, or .mkv)
+	base := segmentDir(rec.basePath, cameraName, t) + "/" + t.Format("15-04-05")
+	var path string
+	for _, ext := range []string{".mp4", ".ts", ".mkv"} {
+		if _, err := os.Stat(base + ext); err == nil {
+			path = base + ext
+			break
+		}
+	}
+	if path == "" {
 		http.Error(w, "segment not found", http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "video/mp4")
+	// Set content type based on extension
+	switch filepath.Ext(path) {
+	case ".ts":
+		w.Header().Set("Content-Type", "video/mp2t")
+	case ".mkv":
+		w.Header().Set("Content-Type", "video/x-matroska")
+	default:
+		w.Header().Set("Content-Type", "video/mp4")
+	}
 	http.ServeFile(w, r, path)
 }
 
@@ -191,11 +207,14 @@ func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 
 	cameraDir := filepath.Join(basePath, cameraName)
 	_ = filepath.Walk(cameraDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".mp4") {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		ext := filepath.Ext(path)
+		if ext != ".mp4" && ext != ".ts" && ext != ".mkv" {
 			return nil
 		}
 
-		// Parse time from directory structure: YYYY-MM-DD/HH-MM-SS.mp4
 		rel, _ := filepath.Rel(cameraDir, path)
 		t := parseSegmentTime(rel)
 		if t.IsZero() {
@@ -224,8 +243,9 @@ func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 
 // parseSegmentTime extracts a time from a path like "2024-01-15/14-30-00.mp4".
 func parseSegmentTime(rel string) time.Time {
-	// Expected format: YYYY-MM-DD/HH-MM-SS.mp4
-	rel = strings.TrimSuffix(rel, ".mp4")
+	// Strip any supported extension
+	ext := filepath.Ext(rel)
+	rel = strings.TrimSuffix(rel, ext)
 	parts := strings.Split(rel, string(filepath.Separator))
 	if len(parts) != 2 {
 		return time.Time{}
