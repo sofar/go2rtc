@@ -216,7 +216,7 @@ func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 	})
 
 	sort.Slice(segments, func(i, j int) bool {
-		return segments[i].Start.Before(segments[j].Start)
+		return segments[i].Start.After(segments[j].Start)
 	})
 
 	return segments
