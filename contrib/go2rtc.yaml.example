@@ -1,0 +1,30 @@
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"
+
+cameras:
+  # example:
+  #   stream: rtsp://admin:password@192.168.1.10:554/stream1
+  #   regions:
+  #     driveway:
+  #       polygon: [[0,0],[640,0],[640,480],[0,480]]
+  #       detect: [person, car]
+  #   recording:
+  #     enabled: true
+
+storage:
+  base_path: /var/lib/go2rtc/recordings
+  segment_duration: 10m
+  default_retention: 14d
+
+# inference:
+#   backend: onnx
+#   model: /var/lib/go2rtc/yolov8s.onnx
+#   sample_fps: 1
+#   confidence_threshold: 0.3
+#   min_frames: 3
+#   class_threshold:
+#     person: 0.7
+#     car: 0.6
