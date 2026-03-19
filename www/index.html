@@ -111,6 +111,7 @@
 
             for (const [key, value] of Object.entries(data)) {
                 const name = key.replace(/[<">]/g, ''); // sanitize
+                if (name.includes('/_')) continue; // hide internal streams
                 fetchedIds.push(name);
 
                 let tr = tbody.querySelector(`tr[data-id="${name}"]`);
