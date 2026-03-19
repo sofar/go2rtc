@@ -44,6 +44,29 @@ func Init() {
 
 	api.HandleFunc("api/snapshot/", apiSnapshot)
 	api.HandleFunc("api/session/cameras", apiSessionCameras)
+
+	// Register snapshot capture for session snapshot storage
+	events.RegisterSnapshotCapture(func(cameraName, region string) []byte {
+		jpeg_data := captureJPEG(cameraName)
+		if jpeg_data == nil {
+			return nil
+		}
+		// Annotate with current detections
+		jpeg_data = annotateDetections(jpeg_data, cameraName)
+		// Crop to region if specified
+		if region != "" {
+			cam := camera.Get(cameraName)
+			if cam != nil && cam.Regions != nil {
+				if r, ok := cam.Regions[region]; ok {
+					cropped, err := cropToRegion(jpeg_data, r)
+					if err == nil {
+						jpeg_data = cropped
+					}
+				}
+			}
+		}
+		return jpeg_data
+	})
 }
 
 func apiSnapshot(w http.ResponseWriter, r *http.Request) {

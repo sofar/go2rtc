@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,6 +21,12 @@ var Default *Bus
 // DefaultTracker is the global session tracker.
 var DefaultTracker *Tracker
 
+// DefaultSnapshots is the global session snapshot store.
+var DefaultSnapshots *SnapshotStore
+
+// SessionBasePath is where session data is stored on disk.
+var SessionBasePath string
+
 // recentEvents stores the last N events for the query API.
 var recentEvents []*Event
 var recentMu sync.RWMutex
@@ -29,12 +36,27 @@ const maxRecentEvents = 1000
 func Init() {
 	log = app.GetLogger("events")
 
+	var cfg struct {
+		Storage struct {
+			BasePath string `yaml:"base_path"`
+		} `yaml:"storage"`
+	}
+	app.LoadConfig(&cfg)
+
 	Default = NewBus()
 
 	// Start session tracker (aggregates detections into sessions).
 	// minFrames is configured later by inference.Init via SetMinFrames.
 	DefaultTracker = NewTracker(Default, defaultQuietDuration, 1)
 	DefaultTracker.Start()
+
+	// Start snapshot store if storage is configured
+	if cfg.Storage.BasePath != "" {
+		SessionBasePath = cfg.Storage.BasePath
+		DefaultSnapshots = NewSnapshotStore(cfg.Storage.BasePath, 5*time.Second, Default, DefaultTracker)
+		DefaultSnapshots.Start()
+		log.Info().Str("path", cfg.Storage.BasePath).Msg("[events] session snapshots enabled")
+	}
 
 	// Store recent events for query API
 	recent := Default.Subscribe(Filter{}, 256)
@@ -55,6 +77,9 @@ func Init() {
 	// REST API
 	api.HandleFunc("api/events", apiEvents)
 	api.HandleFunc("api/sessions", apiSessions)
+	api.HandleFunc("api/sessions/snapshots", apiSessionSnapshots)
+	api.HandleFunc("api/sessions/snapshot/", apiSessionSnapshotFile)
+	api.HandleFunc("api/sessions/stored", apiStoredSessions)
 
 	log.Debug().Msg("[events] initialized")
 }
@@ -175,4 +200,76 @@ func apiSessions(w http.ResponseWriter, r *http.Request) {
 		"active": DefaultTracker.ActiveSessions(),
 		"recent": DefaultTracker.RecentSessions(),
 	})
+}
+
+// apiSessionSnapshots returns snapshot list for a session by ID.
+func apiSessionSnapshots(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id parameter required", http.StatusBadRequest)
+		return
+	}
+
+	if SessionBasePath == "" {
+		http.Error(w, "storage not configured", http.StatusNotFound)
+		return
+	}
+
+	stored, err := GetStoredSession(SessionBasePath, id)
+	if err != nil {
+		http.Error(w, "session not found: "+id, http.StatusNotFound)
+		return
+	}
+
+	api.ResponseJSON(w, stored)
+}
+
+// apiSessionSnapshotFile serves a session snapshot JPEG file.
+// Path: /api/sessions/snapshot/<session-id>/<filename>
+func apiSessionSnapshotFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// Extract session-id/filename from path
+	prefix := "/api/sessions/snapshot/"
+	if len(path) <= len(prefix) {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+	rest := path[len(prefix):]
+
+	if SessionBasePath == "" {
+		http.Error(w, "storage not configured", http.StatusNotFound)
+		return
+	}
+
+	fullPath := filepath.Join(SessionBasePath, "sessions", rest)
+
+	// Security: ensure the resolved path is under basePath
+	abs, err := filepath.Abs(fullPath)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	base, _ := filepath.Abs(SessionBasePath)
+	if len(abs) < len(base) || abs[:len(base)] != base {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	http.ServeFile(w, r, fullPath)
+}
+
+// apiStoredSessions returns recently stored (completed) sessions from disk.
+func apiStoredSessions(w http.ResponseWriter, r *http.Request) {
+	if SessionBasePath == "" {
+		api.ResponseJSON(w, []*StoredSession{})
+		return
+	}
+
+	limit := 50
+	sessions := ListStoredSessions(SessionBasePath, limit)
+	if sessions == nil {
+		sessions = []*StoredSession{}
+	}
+	api.ResponseJSON(w, sessions)
 }

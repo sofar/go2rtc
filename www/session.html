@@ -40,7 +40,7 @@
 
         .snapshots-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
             gap: 12px;
         }
         .snap-card {
@@ -52,7 +52,7 @@
             width: 100%;
             display: block;
             background: #222;
-            min-height: 200px;
+            min-height: 150px;
         }
         .snap-card .snap-label {
             padding: 6px 12px;
@@ -70,6 +70,36 @@
             gap: 10px;
             align-items: center;
         }
+        .timeline {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        .timeline-thumb {
+            width: 120px;
+            height: 68px;
+            object-fit: cover;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .timeline-thumb.selected {
+            border-color: #2ecc71;
+        }
+        .timeline-thumb:hover {
+            border-color: #3498db;
+        }
+        .timeline-time {
+            font-size: 10px;
+            color: #888;
+            text-align: center;
+        }
+        .timeline-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
@@ -79,9 +109,10 @@
 <main>
     <div class="controls">
         <a href="events.html">&larr; back to sessions</a>
-        <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
+        <label><input type="checkbox" id="autorefresh" checked> auto-refresh (active only)</label>
     </div>
     <div id="session-info" class="session-info">Loading...</div>
+    <div id="timeline" class="timeline"></div>
     <div class="snapshots-grid" id="snapshots"></div>
 </main>
 
@@ -89,8 +120,10 @@
     const params = new URLSearchParams(location.search);
     const sessionRegion = params.get('region');
     const sessionClass = params.get('class');
+    const sessionID = params.get('id');
     const infoDiv = document.getElementById('session-info');
     const snapshotsDiv = document.getElementById('snapshots');
+    const timelineDiv = document.getElementById('timeline');
 
     function tagClass(cls) {
         const known = ['person','car','dog','cat','bird','truck'];
@@ -105,23 +138,43 @@
     }
 
     function formatTime(ts) {
-        const d = new Date(ts);
-        return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+        return new Date(ts).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
     }
 
-    async function loadSession() {
-        // Find the session matching region+class
+    // --- Active session (live snapshots) ---
+    async function loadActiveSession() {
         const res = await fetch('api/sessions', {cache: 'no-cache'});
         const data = await res.json();
 
         const all = [...(data.active || []), ...(data.recent || [])];
-        const session = all.find(s => s.region === sessionRegion && s.class === sessionClass);
+        let session;
+        if (sessionID) {
+            session = all.find(s => s.id === sessionID);
+        } else {
+            session = all.find(s => s.region === sessionRegion && s.class === sessionClass);
+        }
 
         if (!session) {
-            infoDiv.innerHTML = `No session found for <b>${sessionClass}</b> in <b>${sessionRegion}</b>`;
+            // Try stored sessions
+            if (sessionID) {
+                loadStoredSession(sessionID);
+                return;
+            }
+            infoDiv.innerHTML = `No session found. <a href="events.html">Go back</a>`;
             return;
         }
 
+        renderSessionInfo(session);
+
+        if (session.active) {
+            loadLiveSnapshots(session);
+        } else if (session.id) {
+            // Just ended — try stored snapshots
+            loadStoredSession(session.id);
+        }
+    }
+
+    function renderSessionInfo(session) {
         const statusClass = session.active ? 'status-active' : 'status-ended';
         const statusText = session.active ? 'ACTIVE' : 'ended';
         const dur = formatDuration(session.duration);
@@ -138,60 +191,104 @@
                 ${session.detection_count} detections &middot;
                 ${conf}% peak &middot;
                 started ${formatTime(session.start)}
+                ${session.end ? ' &middot; ended ' + formatTime(session.end) : ''}
             </span>
         `;
-
-        // Load annotated snapshots from all cameras that have this region
-        loadSnapshots(session);
     }
 
-    let regionCameras = null;
+    async function loadLiveSnapshots(session) {
+        const res = await fetch(`api/session/cameras?region=${encodeURIComponent(session.region)}`, {cache: 'no-cache'});
+        const cameras = await res.json();
 
-    async function loadSnapshots(session) {
-        // Get all cameras that have this region (cached after first call)
-        if (!regionCameras) {
-            const res = await fetch(`api/session/cameras?region=${encodeURIComponent(sessionRegion)}`, {cache: 'no-cache'});
-            regionCameras = await res.json();
-        }
+        timelineDiv.innerHTML = '<div style="color:#888; font-style:italic">Live — snapshots are being captured</div>';
 
-        regionCameras.forEach(camName => {
+        cameras.forEach(camName => {
             const src = encodeURIComponent(camName);
             let card = snapshotsDiv.querySelector(`.snap-card[data-camera="${camName}"]`);
-
             if (!card) {
                 card = document.createElement('div');
                 card.className = 'snap-card';
                 card.dataset.camera = camName;
-                card.innerHTML = `
-                    <img>
-                    <div class="snap-label"></div>
-                    <div class="snap-meta"></div>
-                `;
+                card.innerHTML = `<img><div class="snap-label"></div><div class="snap-meta"></div>`;
                 snapshotsDiv.appendChild(card);
             }
 
             const img = card.querySelector('img');
             if (document.getElementById('autorefresh').checked) {
-                img.src = `api/snapshot/${src}?region=${encodeURIComponent(sessionRegion)}&annotate=true&_t=${Date.now()}`;
+                img.src = `api/snapshot/${src}?region=${encodeURIComponent(session.region)}&annotate=true&_t=${Date.now()}`;
             } else if (!img.src || img.src.includes('undefined')) {
-                img.src = `api/snapshot/${src}?region=${encodeURIComponent(sessionRegion)}&annotate=true`;
+                img.src = `api/snapshot/${src}?region=${encodeURIComponent(session.region)}&annotate=true`;
             }
-
             card.querySelector('.snap-label').textContent = camName;
-
-            const inSession = (session.cameras || [session.camera]).includes(camName);
-            card.querySelector('.snap-meta').textContent = inSession
-                ? 'contributing to this session'
-                : 'has this region (no detection)';
+            card.querySelector('.snap-meta').textContent = 'live';
         });
     }
 
-    if (!sessionRegion || !sessionClass) {
-        infoDiv.innerHTML = 'Missing region or class parameter. <a href="events.html">Go back</a>';
+    // --- Stored session (historical snapshots) ---
+    async function loadStoredSession(id) {
+        const res = await fetch(`api/sessions/snapshots?id=${encodeURIComponent(id)}`, {cache: 'no-cache'});
+        if (!res.ok) {
+            // Session still active or not yet saved
+            infoDiv.innerHTML += ' <span style="color:#888">(snapshots not yet available)</span>';
+            return;
+        }
+
+        const stored = await res.json();
+        if (stored.session) {
+            renderSessionInfo(stored.session);
+        }
+
+        const snaps = stored.snapshots || [];
+        if (snaps.length === 0) {
+            timelineDiv.innerHTML = '<div style="color:#888">No snapshots captured for this session</div>';
+            return;
+        }
+
+        // Build timeline of thumbnails
+        timelineDiv.innerHTML = '';
+        snaps.forEach((snap, i) => {
+            const item = document.createElement('div');
+            item.className = 'timeline-item';
+            const imgUrl = `api/sessions/snapshot/${encodeURIComponent(id)}/${encodeURIComponent(snap.filename)}`;
+            item.innerHTML = `
+                <img class="timeline-thumb${i === 0 ? ' selected' : ''}" src="${imgUrl}" data-index="${i}" data-url="${imgUrl}">
+                <div class="timeline-time">${formatTime(snap.time)}</div>
+            `;
+            timelineDiv.appendChild(item);
+        });
+
+        // Show first snapshot large
+        showStoredSnapshot(snaps[0], id);
+
+        // Click timeline to switch
+        timelineDiv.addEventListener('click', (e) => {
+            const thumb = e.target.closest('.timeline-thumb');
+            if (!thumb) return;
+            const idx = parseInt(thumb.dataset.index);
+            showStoredSnapshot(snaps[idx], id);
+            timelineDiv.querySelectorAll('.timeline-thumb').forEach(t => t.classList.remove('selected'));
+            thumb.classList.add('selected');
+        });
+    }
+
+    function showStoredSnapshot(snap, sessionId) {
+        const url = `api/sessions/snapshot/${encodeURIComponent(sessionId)}/${encodeURIComponent(snap.filename)}`;
+        snapshotsDiv.innerHTML = `
+            <div class="snap-card">
+                <img src="${url}">
+                <div class="snap-label">${snap.filename}</div>
+                <div class="snap-meta">${formatTime(snap.time)}${snap.camera ? ' — ' + snap.camera : ''}</div>
+            </div>
+        `;
+    }
+
+    // --- Init ---
+    if (!sessionRegion && !sessionClass && !sessionID) {
+        infoDiv.innerHTML = 'Missing parameters. <a href="events.html">Go back</a>';
     } else {
-        loadSession();
+        loadActiveSession();
         setInterval(() => {
-            if (document.getElementById('autorefresh').checked) loadSession();
+            if (document.getElementById('autorefresh').checked) loadActiveSession();
         }, 2000);
     }
 </script>
