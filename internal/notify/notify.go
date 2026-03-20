@@ -27,9 +27,10 @@ var log zerolog.Logger
 
 // Config for the notify module.
 type Config struct {
-	Ntfy     *NtfyConfig     `yaml:"ntfy"`
+	Ntfy     *NtfyConfig      `yaml:"ntfy"`
 	Webhooks []*WebhookConfig `yaml:"webhooks"`
-	MQTT     *MQTTConfig     `yaml:"mqtt"`
+	MQTT     *MQTTConfig      `yaml:"mqtt"`
+	Policies []*Policy        `yaml:"policies"`
 }
 
 // Backend sends a notification.
@@ -51,7 +52,10 @@ type Notification struct {
 	Session  *events.Session   `json:"session,omitempty"`
 }
 
-var backends []Backend
+var (
+	namedBackends map[string]Backend
+	policies      []*Policy
+)
 
 func Init() {
 	log = app.GetLogger("notify")
@@ -61,14 +65,17 @@ func Init() {
 	}
 	app.LoadConfig(&cfg)
 
+	namedBackends = make(map[string]Backend)
+
 	if cfg.Mod.Ntfy != nil && cfg.Mod.Ntfy.URL != "" {
-		backends = append(backends, NewNtfyBackend(cfg.Mod.Ntfy))
+		namedBackends["ntfy"] = NewNtfyBackend(cfg.Mod.Ntfy)
 		log.Info().Str("url", cfg.Mod.Ntfy.URL).Msg("[notify] ntfy enabled")
 	}
 
-	for _, wh := range cfg.Mod.Webhooks {
+	for i, wh := range cfg.Mod.Webhooks {
 		if wh.URL != "" {
-			backends = append(backends, NewWebhookBackend(wh))
+			name := fmt.Sprintf("webhook_%d", i)
+			namedBackends[name] = NewWebhookBackend(wh)
 			log.Info().Str("url", wh.URL).Msg("[notify] webhook enabled")
 		}
 	}
@@ -78,31 +85,58 @@ func Init() {
 		if err != nil {
 			log.Error().Err(err).Msg("[notify] mqtt")
 		} else {
-			backends = append(backends, b)
+			namedBackends["mqtt"] = b
 			log.Info().Str("broker", cfg.Mod.MQTT.Broker).Msg("[notify] mqtt enabled")
 		}
 	}
 
-	if len(backends) == 0 {
+	if len(namedBackends) == 0 {
 		return
 	}
+
+	// Store policies (if none configured, create a default catch-all)
+	policies = cfg.Mod.Policies
+	if len(policies) == 0 {
+		policies = []*Policy{{On: "start"}, {On: "end"}}
+	}
+
+	log.Info().Int("policies", len(policies)).Int("backends", len(namedBackends)).Msg("[notify] started")
 
 	// Subscribe to session events
 	ch := events.Default.Subscribe(events.Filter{}, 128)
 	go func() {
 		for e := range ch {
+			var sess *events.Session
 			switch e.Type {
-			case events.TypeSessionStart:
-				if sess, ok := e.Data.(*events.Session); ok {
-					dispatch(sessionNotification(sess, "start"))
-				}
-			case events.TypeSessionEnd:
-				if sess, ok := e.Data.(*events.Session); ok {
-					dispatch(sessionNotification(sess, "end"))
+			case events.TypeSessionStart, events.TypeSessionEnd:
+				sess, _ = e.Data.(*events.Session)
+			}
+			if sess == nil {
+				continue
+			}
+
+			for _, p := range policies {
+				if p.Matches(sess, e.Type) {
+					n := sessionNotification(sess, eventName(e.Type))
+					if p.Priority != "" {
+						n.Priority = p.Priority
+					}
+					dispatch(n, p.Backends)
 				}
 			}
 		}
 	}()
+}
+
+func eventName(t string) string {
+	switch t {
+	case events.TypeSessionStart:
+		return "start"
+	case events.TypeSessionEnd:
+		return "end"
+	default:
+		return t
+	}
 }
 
 func sessionNotification(sess *events.Session, event string) Notification {
@@ -142,10 +176,23 @@ func sessionNotification(sess *events.Session, event string) Notification {
 	}
 }
 
-func dispatch(n Notification) {
-	for _, b := range backends {
-		if err := b.Send(n); err != nil {
-			log.Error().Err(err).Str("type", fmt.Sprintf("%T", b)).Msg("[notify] send")
+func dispatch(n Notification, backendNames []string) {
+	if len(backendNames) == 0 {
+		// Send to all backends
+		for name, b := range namedBackends {
+			if err := b.Send(n); err != nil {
+				log.Error().Err(err).Str("backend", name).Msg("[notify] send")
+			}
+		}
+		return
+	}
+
+	// Send to specific backends only
+	for _, name := range backendNames {
+		if b, ok := namedBackends[name]; ok {
+			if err := b.Send(n); err != nil {
+				log.Error().Err(err).Str("backend", name).Msg("[notify] send")
+			}
 		}
 	}
 }
