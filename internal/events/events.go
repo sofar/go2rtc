@@ -48,7 +48,20 @@ func Init() {
 	// Start session tracker (aggregates detections into sessions).
 	// minFrames is configured later by inference.Init via SetMinFrames.
 	DefaultTracker = NewTracker(Default, defaultQuietDuration, 1)
+
+	// Restore sessions from disk before starting
+	if cfg.Storage.BasePath != "" {
+		if err := DefaultTracker.LoadState(cfg.Storage.BasePath); err != nil {
+			log.Error().Err(err).Msg("[events] load sessions")
+		}
+	}
+
 	DefaultTracker.Start()
+
+	// Start periodic session persistence
+	if cfg.Storage.BasePath != "" {
+		DefaultTracker.startPeriodicSave(cfg.Storage.BasePath)
+	}
 
 	// Start snapshot store if storage is configured
 	if cfg.Storage.BasePath != "" {
