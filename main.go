@@ -33,6 +33,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/mpeg"
 	"github.com/AlexxIT/go2rtc/internal/multitrans"
 	"github.com/AlexxIT/go2rtc/internal/nest"
+	"github.com/AlexxIT/go2rtc/internal/notify"
 	"github.com/AlexxIT/go2rtc/internal/offline"
 	"github.com/AlexxIT/go2rtc/internal/ngrok"
 	"github.com/AlexxIT/go2rtc/internal/onvif"
@@ -123,6 +124,7 @@ func main() {
 		{"inference", inference.Init},
 		{"viewgroup", viewgroup.Init},
 		{"snapshot", snapshot.Init},
+		{"notify", notify.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
