@@ -404,6 +404,11 @@ func mergeSegments(local, remote []Segment) []Segment {
 	return local
 }
 
+// GetPathPattern returns the configured local storage path pattern.
+func GetPathPattern() *PathPattern {
+	return globalPattern
+}
+
 // GetRecorder returns the active recorder for a camera, or nil.
 func GetRecorder(name string) *Recorder {
 	recordersMu.RLock()

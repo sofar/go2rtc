@@ -143,8 +143,14 @@ func Init() {
 		}
 	}
 
-	// Set up remote path pattern
-	remotePattern = storage.NewPathPattern(cfg.Mod.PathPattern)
+	// Set up remote path pattern: use upload's own if set, otherwise inherit from storage
+	if cfg.Mod.PathPattern != "" {
+		remotePattern = storage.NewPathPattern(cfg.Mod.PathPattern)
+	} else if p := storage.GetPathPattern(); p != nil {
+		remotePattern = p
+	} else {
+		remotePattern = storage.NewPathPattern("")
+	}
 	storage.RemotePattern = remotePattern
 	log.Info().Str("path_pattern", remotePattern.String()).Msg("[upload] path pattern")
 
