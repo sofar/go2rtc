@@ -13,6 +13,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -35,6 +36,24 @@ var log zerolog.Logger
 var recorders = map[string]*Recorder{}
 var recordersMu sync.RWMutex
 
+// basePath is stored for remote download caching.
+var globalBasePath string
+
+// RemoteSegmentInfo is a segment available on remote storage.
+type RemoteSegmentInfo struct {
+	Path    string
+	Size    int64
+	ModTime time.Time
+}
+
+// Remote storage callbacks — set by the upload module to avoid circular imports.
+var (
+	// RemoteDownload fetches a remote file to a local path.
+	RemoteDownload func(ctx context.Context, remotePath, localPath string) error
+	// RemoteList lists files under a remote prefix.
+	RemoteList func(ctx context.Context, prefix string) ([]RemoteSegmentInfo, error)
+)
+
 func Init() {
 	log = app.GetLogger("storage")
 
@@ -46,10 +65,16 @@ func Init() {
 	if cfg.Mod.BasePath == "" {
 		return // storage not configured
 	}
+	globalBasePath = cfg.Mod.BasePath
 
-	defaultRetention, err := parseDuration(cfg.Mod.DefaultRetention)
+	// "retention" is preferred; "default_retention" is a backward-compat alias
+	retentionStr := cfg.Mod.Retention
+	if retentionStr == "" {
+		retentionStr = cfg.Mod.DefaultRetention
+	}
+	retention, err := ParseRetention(retentionStr)
 	if err != nil {
-		log.Error().Err(err).Msg("[storage] invalid default_retention")
+		log.Error().Err(err).Msg("[storage] invalid retention")
 		return
 	}
 
@@ -112,9 +137,9 @@ func Init() {
 			Msg("[storage] recording started")
 	}
 
-	// Start retention cleanup
-	if defaultRetention > 0 {
-		runRetention(cfg.Mod.BasePath, defaultRetention, time.Hour)
+	// Start local retention cleanup
+	if !retention.IsZero() {
+		runRetention(cfg.Mod.BasePath, retention, time.Hour)
 	}
 
 	api.HandleFunc("api/recordings", apiRecordings)
@@ -146,6 +171,11 @@ func apiRecordings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	segments := listSegments(rec.basePath, cameraName, from, to)
+
+	// Merge remote segments that aren't available locally
+	remote := listRemoteSegments(cameraName, from, to)
+	segments = mergeSegments(segments, remote)
+
 	api.ResponseJSON(w, segments)
 }
 
@@ -183,6 +213,11 @@ func apiPlay(w http.ResponseWriter, r *http.Request) {
 			path = base + ext
 			break
 		}
+	}
+
+	// If not found locally, try to fetch from remote backend
+	if path == "" {
+		path = fetchFromRemote(rec.basePath, cameraName, t)
 	}
 	if path == "" {
 		http.Error(w, "segment not found", http.StatusNotFound)
@@ -290,6 +325,95 @@ func buildRecordingSource(cameraName string, rec *camera.RecordingConfig) string
 	}
 
 	return source
+}
+
+// fetchFromRemote attempts to download a segment from the remote backend.
+// Returns the local path on success, or empty string on failure.
+func fetchFromRemote(basePath, cameraName string, t time.Time) string {
+	if RemoteDownload == nil {
+		return ""
+	}
+
+	for _, ext := range []string{".mp4", ".ts", ".mkv"} {
+		remotePath := "recordings/" + cameraName + "/" + t.Format("2006-01-02") + "/" + t.Format("15-04-05") + ext
+		localPath := segmentDir(basePath, cameraName, t) + "/" + t.Format("15-04-05") + ext
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := RemoteDownload(ctx, remotePath, localPath)
+		cancel()
+
+		if err == nil {
+			log.Debug().Str("path", remotePath).Msg("[storage] fetched from remote")
+			return localPath
+		}
+	}
+	return ""
+}
+
+// listRemoteSegments queries the upload backend for segments not available locally.
+func listRemoteSegments(cameraName string, from, to time.Time) []Segment {
+	if RemoteList == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	prefix := "recordings/" + cameraName + "/"
+	remoteSegs, err := RemoteList(ctx, prefix)
+	if err != nil || len(remoteSegs) == 0 {
+		return nil
+	}
+
+	var segments []Segment
+	for _, rs := range remoteSegs {
+		// rs.Path is like "recordings/camera/2026-01-15/14-30-00.mp4"
+		rel := strings.TrimPrefix(rs.Path, "recordings/")
+		rel = strings.TrimPrefix(rel, cameraName+"/")
+
+		t := parseSegmentTime(rel)
+		if t.IsZero() {
+			continue
+		}
+		if (!from.IsZero() && t.Before(from)) || t.After(to) {
+			continue
+		}
+
+		segments = append(segments, Segment{
+			Camera: cameraName,
+			Start:  t,
+			Size:   rs.Size,
+			Path:   rel,
+			Remote: true,
+		})
+	}
+	return segments
+}
+
+// mergeSegments combines local and remote segments, deduplicating by start time.
+// Local segments take priority over remote ones.
+func mergeSegments(local, remote []Segment) []Segment {
+	if len(remote) == 0 {
+		return local
+	}
+
+	// Build set of local segment times for dedup
+	localTimes := make(map[int64]bool, len(local))
+	for _, s := range local {
+		localTimes[s.Start.Unix()] = true
+	}
+
+	// Add remote segments not present locally
+	for _, s := range remote {
+		if !localTimes[s.Start.Unix()] {
+			local = append(local, s)
+		}
+	}
+
+	sort.Slice(local, func(i, j int) bool {
+		return local[i].Start.After(local[j].Start)
+	})
+	return local
 }
 
 // GetRecorder returns the active recorder for a camera, or nil.
