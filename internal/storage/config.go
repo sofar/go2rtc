@@ -134,26 +134,41 @@ func (p *PathPattern) Parse(rel string) (camera string, t time.Time, ok bool) {
 func (p *PathPattern) String() string { return p.pattern }
 
 // compile builds a regex from the pattern for parsing paths.
+// The first occurrence of each variable becomes a named capture group;
+// subsequent occurrences use a backreference to match the same value.
 func (p *PathPattern) compile() {
-	// Escape regex metacharacters in the literal parts, then replace variables
-	// with named capture groups.
-	escaped := regexp.QuoteMeta(p.pattern)
+	result := regexp.QuoteMeta(p.pattern)
 
-	replacements := []struct{ from, to string }{
-		{regexp.QuoteMeta("{camera}"), `(?P<camera>[^/]+)`},
-		{regexp.QuoteMeta("{year}"), `(?P<year>\d{4})`},
-		{regexp.QuoteMeta("{month}"), `(?P<month>\d{2})`},
-		{regexp.QuoteMeta("{day}"), `(?P<day>\d{2})`},
-		{regexp.QuoteMeta("{hour}"), `(?P<hour>\d{2})`},
-		{regexp.QuoteMeta("{minute}"), `(?P<minute>\d{2})`},
-		{regexp.QuoteMeta("{second}"), `(?P<second>\d{2})`},
+	vars := []struct {
+		tag, name, pat string
+	}{
+		{"{camera}", "camera", `[^/]+`},
+		{"{year}", "year", `\d{4}`},
+		{"{month}", "month", `\d{2}`},
+		{"{day}", "day", `\d{2}`},
+		{"{hour}", "hour", `\d{2}`},
+		{"{minute}", "minute", `\d{2}`},
+		{"{second}", "second", `\d{2}`},
 	}
 
-	for _, r := range replacements {
-		escaped = strings.Replace(escaped, r.from, r.to, 1)
+	seen := map[string]bool{}
+	for _, v := range vars {
+		qtag := regexp.QuoteMeta(v.tag)
+		for strings.Contains(result, qtag) {
+			var repl string
+			if !seen[v.name] {
+				// First occurrence: named capture group
+				repl = fmt.Sprintf(`(?P<%s>%s)`, v.name, v.pat)
+				seen[v.name] = true
+			} else {
+				// Subsequent: non-capturing group matching the same pattern
+				repl = fmt.Sprintf(`(?:%s)`, v.pat)
+			}
+			result = strings.Replace(result, qtag, repl, 1)
+		}
 	}
 
-	p.re = regexp.MustCompile("^" + escaped + "$")
+	p.re = regexp.MustCompile("^" + result + "$")
 }
 
 // segmentDir returns the date directory for a timestamp (uses default pattern).

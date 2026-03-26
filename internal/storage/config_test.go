@@ -74,6 +74,18 @@ func TestPathPattern_DateFirst(t *testing.T) {
 	assert.Equal(t, "2026-03-25T19:45:00", parsed.Format("2006-01-02T15:04:05"))
 }
 
+func TestPathPattern_RepeatedVars(t *testing.T) {
+	p := NewPathPattern("{camera}/{camera}-{hour}/{year}-{month}-{day}-{hour}-{minute}-{second}")
+	ts := time.Date(2026, 3, 25, 14, 30, 0, 0, time.Local)
+
+	assert.Equal(t, "lobby/lobby-14/2026-03-25-14-30-00", p.Format("lobby", ts))
+
+	cam, parsed, ok := p.Parse("lobby/lobby-14/2026-03-25-14-30-00.mp4")
+	assert.True(t, ok)
+	assert.Equal(t, "lobby", cam)
+	assert.Equal(t, "2026-03-25T14:30:00", parsed.Format("2006-01-02T15:04:05"))
+}
+
 func TestPathPattern_NoMatch(t *testing.T) {
 	p := NewPathPattern("")
 	_, _, ok := p.Parse("bad-path.mp4")
