@@ -39,6 +39,12 @@ var recordersMu sync.RWMutex
 // basePath is stored for remote download caching.
 var globalBasePath string
 
+// globalPattern is the configured path pattern for segment paths.
+var globalPattern *PathPattern
+
+// remotePattern is the upload module's path pattern. Set by upload.Init().
+var RemotePattern *PathPattern
+
 // RemoteSegmentInfo is a segment available on remote storage.
 type RemoteSegmentInfo struct {
 	Path    string
@@ -66,6 +72,9 @@ func Init() {
 		return // storage not configured
 	}
 	globalBasePath = cfg.Mod.BasePath
+	globalPattern = NewPathPattern(cfg.Mod.PathPattern)
+
+	log.Info().Str("path_pattern", globalPattern.String()).Msg("[storage] path pattern")
 
 	// "retention" is preferred; "default_retention" is a backward-compat alias
 	retentionStr := cfg.Mod.Retention
@@ -120,7 +129,7 @@ func Init() {
 			continue
 		}
 
-		recorder := NewRecorder(cam.Name, basePath, segDur, cfg.Mod.Format)
+		recorder := NewRecorder(cam.Name, basePath, globalPattern, segDur, cfg.Mod.Format)
 		if err := stream.AddConsumer(recorder); err != nil {
 			log.Error().Err(err).Str("camera", cam.Name).Msg("[storage] add consumer")
 			continue
@@ -206,11 +215,11 @@ func apiPlay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the segment file (could be .mp4, .ts, or .mkv)
-	base := segmentDir(rec.basePath, cameraName, t) + "/" + t.Format("15-04-05")
 	var path string
 	for _, ext := range []string{".mp4", ".ts", ".mkv"} {
-		if _, err := os.Stat(base + ext); err == nil {
-			path = base + ext
+		candidate := globalPattern.FormatFull(rec.basePath, cameraName, t, ext)
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
 			break
 		}
 	}
@@ -240,8 +249,7 @@ func apiPlay(w http.ResponseWriter, r *http.Request) {
 func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 	var segments []Segment
 
-	cameraDir := filepath.Join(basePath, cameraName)
-	_ = filepath.Walk(cameraDir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
@@ -250,9 +258,9 @@ func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 			return nil
 		}
 
-		rel, _ := filepath.Rel(cameraDir, path)
-		t := parseSegmentTime(rel)
-		if t.IsZero() {
+		rel, _ := filepath.Rel(basePath, path)
+		cam, t, ok := globalPattern.Parse(rel)
+		if !ok || cam != cameraName {
 			return nil
 		}
 
@@ -274,23 +282,6 @@ func listSegments(basePath, cameraName string, from, to time.Time) []Segment {
 	})
 
 	return segments
-}
-
-// parseSegmentTime extracts a time from a path like "2024-01-15/14-30-00.mp4".
-func parseSegmentTime(rel string) time.Time {
-	// Strip any supported extension
-	ext := filepath.Ext(rel)
-	rel = strings.TrimSuffix(rel, ext)
-	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 2 {
-		return time.Time{}
-	}
-
-	t, err := time.ParseInLocation("2006-01-02/15-04-05", parts[0]+"/"+parts[1], time.Local)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }
 
 func parseTime(s string) time.Time {
@@ -330,13 +321,13 @@ func buildRecordingSource(cameraName string, rec *camera.RecordingConfig) string
 // fetchFromRemote attempts to download a segment from the remote backend.
 // Returns the local path on success, or empty string on failure.
 func fetchFromRemote(basePath, cameraName string, t time.Time) string {
-	if RemoteDownload == nil {
+	if RemoteDownload == nil || RemotePattern == nil {
 		return ""
 	}
 
 	for _, ext := range []string{".mp4", ".ts", ".mkv"} {
-		remotePath := "recordings/" + cameraName + "/" + t.Format("2006-01-02") + "/" + t.Format("15-04-05") + ext
-		localPath := segmentDir(basePath, cameraName, t) + "/" + t.Format("15-04-05") + ext
+		remotePath := RemotePattern.Format(cameraName, t) + ext
+		localPath := globalPattern.FormatFull(basePath, cameraName, t, ext)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		err := RemoteDownload(ctx, remotePath, localPath)
@@ -352,27 +343,24 @@ func fetchFromRemote(basePath, cameraName string, t time.Time) string {
 
 // listRemoteSegments queries the upload backend for segments not available locally.
 func listRemoteSegments(cameraName string, from, to time.Time) []Segment {
-	if RemoteList == nil {
+	if RemoteList == nil || RemotePattern == nil {
 		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	prefix := "recordings/" + cameraName + "/"
-	remoteSegs, err := RemoteList(ctx, prefix)
+	// Use the remote pattern to determine the listing prefix.
+	// We list from the root and filter by camera using the pattern parser.
+	remoteSegs, err := RemoteList(ctx, "")
 	if err != nil || len(remoteSegs) == 0 {
 		return nil
 	}
 
 	var segments []Segment
 	for _, rs := range remoteSegs {
-		// rs.Path is like "recordings/camera/2026-01-15/14-30-00.mp4"
-		rel := strings.TrimPrefix(rs.Path, "recordings/")
-		rel = strings.TrimPrefix(rel, cameraName+"/")
-
-		t := parseSegmentTime(rel)
-		if t.IsZero() {
+		cam, t, ok := RemotePattern.Parse(rs.Path)
+		if !ok || cam != cameraName {
 			continue
 		}
 		if (!from.IsZero() && t.Before(from)) || t.After(to) {
@@ -383,7 +371,7 @@ func listRemoteSegments(cameraName string, from, to time.Time) []Segment {
 			Camera: cameraName,
 			Start:  t,
 			Size:   rs.Size,
-			Path:   rel,
+			Path:   rs.Path,
 			Remote: true,
 		})
 	}

@@ -11,20 +11,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testPattern() *PathPattern {
+	return NewPathPattern("")
+}
+
 func TestNewRecorder_DefaultSegDur(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0, "")
+	rec := NewRecorder("cam1", "/tmp/test", testPattern(), 0, "")
 	assert.Equal(t, 5*time.Minute, rec.segDur)
 	assert.Equal(t, "cam1", rec.camera)
 	assert.Equal(t, "/tmp/test", rec.basePath)
 }
 
 func TestNewRecorder_CustomSegDur(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 10*time.Minute, "")
+	rec := NewRecorder("cam1", "/tmp/test", testPattern(), 10*time.Minute, "")
 	assert.Equal(t, 10*time.Minute, rec.segDur)
 }
 
 func TestRecorder_GetMedias(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0, "")
+	rec := NewRecorder("cam1", "/tmp/test", testPattern(), 0, "")
 	medias := rec.GetMedias()
 	require.Len(t, medias, 2)
 
@@ -37,17 +41,19 @@ func TestRecorder_GetMedias(t *testing.T) {
 }
 
 func TestRecorder_Stop_NoFile(t *testing.T) {
-	rec := NewRecorder("cam1", "/tmp/test", 0, "")
+	rec := NewRecorder("cam1", "/tmp/test", testPattern(), 0, "")
 	assert.NoError(t, rec.Stop())
 }
 
 func TestListSegments_Empty(t *testing.T) {
+	globalPattern = testPattern()
 	dir := t.TempDir()
 	segments := listSegments(dir, "cam1", time.Time{}, time.Now())
 	assert.Empty(t, segments)
 }
 
 func TestListSegments_FindsFiles(t *testing.T) {
+	globalPattern = testPattern()
 	dir := t.TempDir()
 	camDir := filepath.Join(dir, "cam1", "2024-03-15")
 	require.NoError(t, os.MkdirAll(camDir, 0o755))
@@ -76,6 +82,7 @@ func TestListSegments_FindsFiles(t *testing.T) {
 }
 
 func TestListSegments_TimeFilter(t *testing.T) {
+	globalPattern = testPattern()
 	dir := t.TempDir()
 	camDir := filepath.Join(dir, "cam1", "2024-03-15")
 	require.NoError(t, os.MkdirAll(camDir, 0o755))
@@ -91,5 +98,5 @@ func TestListSegments_TimeFilter(t *testing.T) {
 
 	segments := listSegments(dir, "cam1", from, to)
 	require.Len(t, segments, 1)
-	assert.Equal(t, "2024-03-15/12-00-00.mp4", segments[0].Path)
+	assert.Equal(t, "cam1/2024-03-15/12-00-00.mp4", segments[0].Path)
 }

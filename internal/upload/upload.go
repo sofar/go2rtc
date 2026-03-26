@@ -5,6 +5,7 @@
 // Configuration:
 //
 //	upload:
+//	  path_pattern: "{camera}/{year}-{month}-{day}/{hour}-{minute}-{second}"
 //	  retention: 90d
 //	  s3:
 //	    bucket: my-cameras
@@ -13,12 +14,13 @@
 //	    host: ftp.example.com:21
 //	    username: user
 //	    password: pass
-//	    path: /recordings/
+//	    path: /cameras/
 //	  smb:
-//	    host: //nas.local/share
+//	    host: nas.local
+//	    share: Camera
 //	    username: user
 //	    password: pass
-//	    path: /recordings/
+//	    path: /go2rtc/
 package upload
 
 import (
@@ -44,18 +46,21 @@ var log zerolog.Logger
 
 // Config for the upload module.
 type Config struct {
-	Retention  string `yaml:"retention"`  // remote retention (e.g. "90d")
-	MaxRetries int    `yaml:"max_retries"`
-	RetryDelay string `yaml:"retry_delay"`
+	PathPattern string `yaml:"path_pattern"` // e.g. "{camera}/{year}-{month}-{day}/{hour}-{minute}-{second}"
+	Retention   string `yaml:"retention"`    // remote retention (e.g. "90d")
+	MaxRetries  int    `yaml:"max_retries"`
+	RetryDelay  string `yaml:"retry_delay"`
 
 	S3  *S3Config  `yaml:"s3"`
 	FTP *FTPConfig `yaml:"ftp"`
 	SMB *SMBConfig `yaml:"smb"`
 }
 
+var remotePattern *storage.PathPattern
+
 // RemoteSegment represents a file on the remote backend.
 type RemoteSegment struct {
-	Path    string    // relative path (e.g. "recordings/amcrest/2026-01-15/14-30-00.mp4")
+	Path    string    // relative path
 	Size    int64     // bytes
 	ModTime time.Time // last modified
 }
@@ -138,6 +143,11 @@ func Init() {
 		}
 	}
 
+	// Set up remote path pattern
+	remotePattern = storage.NewPathPattern(cfg.Mod.PathPattern)
+	storage.RemotePattern = remotePattern
+	log.Info().Str("path_pattern", remotePattern.String()).Msg("[upload] path pattern")
+
 	// Buffered job queue
 	jobs = make(chan uploadJob, 1024)
 
@@ -148,7 +158,10 @@ func Init() {
 	}
 
 	// Hook recording segment uploads
-	storage.OnSegmentClosed = enqueueSegment
+	storage.OnSegmentClosed = func(localPath, camera string, t time.Time, ext string) {
+		remotePath := remotePattern.Format(camera, t) + ext
+		enqueueFile(localPath, remotePath)
+	}
 
 	// Subscribe to session_end events for snapshot uploads
 	if events.Default != nil {
@@ -209,13 +222,13 @@ func Init() {
 	log.Info().Int("backends", len(backends)).Msg("[upload] started")
 }
 
-func enqueueSegment(localPath, relPath string) {
+func enqueueFile(localPath, remotePath string) {
 	pending.Add(1)
 	select {
-	case jobs <- uploadJob{LocalPath: localPath, RemotePath: "recordings/" + relPath}:
+	case jobs <- uploadJob{LocalPath: localPath, RemotePath: remotePath}:
 	default:
 		pending.Add(-1)
-		log.Warn().Str("path", relPath).Msg("[upload] queue full, dropping segment")
+		log.Warn().Str("path", remotePath).Msg("[upload] queue full, dropping")
 	}
 }
 
@@ -299,13 +312,12 @@ func FirstBackend() Backend {
 }
 
 // ListRemoteSegments lists recording segments on the first available backend.
-func ListRemoteSegments(ctx context.Context, camera string) ([]RemoteSegment, error) {
+func ListRemoteSegments(ctx context.Context) ([]RemoteSegment, error) {
 	b := FirstBackend()
 	if b == nil {
 		return nil, nil
 	}
-	prefix := "recordings/" + camera + "/"
-	return b.List(ctx, prefix)
+	return b.List(ctx, "")
 }
 
 // DownloadSegment fetches a segment from the first available backend to a local path.
@@ -337,7 +349,7 @@ func enforceRemoteRetention(policy storage.RetentionPolicy) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	segments, err := b.List(ctx, "recordings/")
+	segments, err := b.List(ctx, "")
 	if err != nil {
 		log.Error().Err(err).Msg("[upload] remote retention: list failed")
 		return

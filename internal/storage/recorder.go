@@ -19,10 +19,11 @@ import (
 type Recorder struct {
 	core.Connection
 
-	camera   string
-	basePath string
-	segDur   time.Duration
-	format   string
+	camera      string
+	basePath    string
+	pathPattern *PathPattern
+	segDur      time.Duration
+	format      string
 
 	writer  SegmentWriter
 	mu      sync.Mutex
@@ -40,7 +41,7 @@ type Recorder struct {
 }
 
 // NewRecorder creates a recorder for a camera.
-func NewRecorder(camera, basePath string, segDur time.Duration, format string) *Recorder {
+func NewRecorder(camera, basePath string, pattern *PathPattern, segDur time.Duration, format string) *Recorder {
 	if segDur <= 0 {
 		segDur = 5 * time.Minute
 	}
@@ -70,11 +71,12 @@ func NewRecorder(camera, basePath string, segDur time.Duration, format string) *
 				},
 			},
 		},
-		camera:   camera,
-		basePath: basePath,
-		segDur:   segDur,
-		format:   format,
-		writer:   newWriter(format),
+		camera:      camera,
+		basePath:    basePath,
+		pathPattern: pattern,
+		segDur:      segDur,
+		format:      format,
+		writer:      newWriter(format),
 	}
 }
 
@@ -164,14 +166,13 @@ func (r *Recorder) rotateSegment() {
 	}
 
 	now := time.Now()
-	dir := segmentDir(r.basePath, r.camera, now)
+	ext := r.writer.Extension()
+	path := r.pathPattern.FormatFull(r.basePath, r.camera, now, ext)
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Error().Err(err).Str("dir", dir).Msg("[storage] mkdir")
 		return
 	}
-
-	ext := r.writer.Extension()
-	path := segmentDir(r.basePath, r.camera, now) + "/" + now.Format("15-04-05") + ext
 	f, err := os.Create(path)
 	if err != nil {
 		log.Error().Err(err).Str("path", path).Msg("[storage] create")
@@ -195,7 +196,8 @@ func (r *Recorder) rotateSegment() {
 
 // OnSegmentClosed is called after a segment file is finalized.
 // Set by the upload module to trigger async uploads.
-var OnSegmentClosed func(localPath, relPath string)
+// Parameters: localPath, camera name, segment start time, file extension.
+var OnSegmentClosed func(localPath, camera string, t time.Time, ext string)
 
 func (r *Recorder) closeSegment() {
 	if r.file == nil {
@@ -219,10 +221,7 @@ func (r *Recorder) closeSegment() {
 
 	// Notify upload module if configured
 	if OnSegmentClosed != nil {
-		// relPath: camera/YYYY-MM-DD/HH-MM-SS.ext
-		if rel, err := filepath.Rel(r.basePath, path); err == nil {
-			OnSegmentClosed(path, rel)
-		}
+		OnSegmentClosed(path, r.camera, r.segStart, r.writer.Extension())
 	}
 }
 
