@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -399,6 +400,21 @@ func deleteRemoteFile(b Backend, remotePath string) bool {
 		return false
 	}
 	return true
+}
+
+// resolvePassword returns password from the file if password_file is set,
+// otherwise returns the inline password.
+func resolvePassword(password, passwordFile string) string {
+	if passwordFile != "" {
+		data, err := os.ReadFile(passwordFile)
+		if err != nil {
+			log.Error().Err(err).Str("file", passwordFile).Msg("[upload] read password_file")
+			return password
+		}
+		// Trim trailing newline — common in secret files
+		return strings.TrimRight(string(data), "\r\n")
+	}
+	return password
 }
 
 func apiStatus(w http.ResponseWriter, r *http.Request) {

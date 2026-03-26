@@ -16,11 +16,12 @@ import (
 
 // FTPConfig for FTP/FTPS backend.
 type FTPConfig struct {
-	Host     string `yaml:"host"` // host:port
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	Path     string `yaml:"path"` // remote base path
-	TLS      bool   `yaml:"tls"`
+	Host         string `yaml:"host"` // host:port
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	PasswordFile string `yaml:"password_file"` // path to file containing password
+	Path         string `yaml:"path"`          // remote base path
+	TLS          bool   `yaml:"tls"`
 }
 
 type ftpBackend struct {
@@ -59,7 +60,8 @@ func (b *ftpBackend) connect() (*ftp.ServerConn, error) {
 		return nil, fmt.Errorf("ftp: dial %s: %w", b.cfg.Host, err)
 	}
 
-	if err := conn.Login(b.cfg.Username, b.cfg.Password); err != nil {
+	password := resolvePassword(b.cfg.Password, b.cfg.PasswordFile)
+	if err := conn.Login(b.cfg.Username, password); err != nil {
 		conn.Quit()
 		return nil, fmt.Errorf("ftp: login: %w", err)
 	}

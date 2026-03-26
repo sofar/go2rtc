@@ -15,11 +15,12 @@ import (
 
 // SMBConfig for SMB/CIFS backend.
 type SMBConfig struct {
-	Host     string `yaml:"host"`     // server address (host or host:port)
-	Share    string `yaml:"share"`    // share name
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	Path     string `yaml:"path"` // base path within the share
+	Host         string `yaml:"host"`          // server address (host or host:port)
+	Share        string `yaml:"share"`         // share name
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	PasswordFile string `yaml:"password_file"` // path to file containing password
+	Path         string `yaml:"path"`          // base path within the share
 }
 
 type smbBackend struct {
@@ -52,10 +53,11 @@ func (b *smbBackend) connect() (*smb2.Share, error) {
 		return nil, fmt.Errorf("smb: dial %s: %w", host, err)
 	}
 
+	password := resolvePassword(b.cfg.Password, b.cfg.PasswordFile)
 	d := &smb2.Dialer{
 		Initiator: &smb2.NTLMInitiator{
 			User:     b.cfg.Username,
-			Password: b.cfg.Password,
+			Password: password,
 		},
 	}
 
