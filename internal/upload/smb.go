@@ -142,6 +142,9 @@ func (b *smbBackend) List(_ context.Context, prefix string) ([]RemoteSegment, er
 func (b *smbBackend) listRecursive(sh *smb2.Share, dir, basePath string) ([]RemoteSegment, error) {
 	entries, err := sh.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // directory doesn't exist yet
+		}
 		return nil, fmt.Errorf("smb: readdir %s: %w", dir, err)
 	}
 

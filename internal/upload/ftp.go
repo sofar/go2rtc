@@ -117,7 +117,8 @@ func (b *ftpBackend) List(_ context.Context, prefix string) ([]RemoteSegment, er
 func (b *ftpBackend) listRecursive(conn *ftp.ServerConn, dir, basePath string) ([]RemoteSegment, error) {
 	entries, err := conn.List(dir)
 	if err != nil {
-		return nil, fmt.Errorf("ftp: list %s: %w", dir, err)
+		// FTP returns 550 when directory doesn't exist — treat as empty
+		return nil, nil
 	}
 
 	var segments []RemoteSegment
