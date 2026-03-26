@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -192,10 +193,17 @@ func (r *Recorder) rotateSegment() {
 	log.Debug().Str("camera", r.camera).Str("path", path).Msg("[storage] new segment")
 }
 
+// OnSegmentClosed is called after a segment file is finalized.
+// Set by the upload module to trigger async uploads.
+var OnSegmentClosed func(localPath, relPath string)
+
 func (r *Recorder) closeSegment() {
 	if r.file == nil {
 		return
 	}
+
+	path := r.file.Name()
+
 	if err := r.file.Close(); err != nil {
 		log.Error().Err(err).Msg("[storage] close segment")
 	}
@@ -208,6 +216,14 @@ func (r *Recorder) closeSegment() {
 		Msg("[storage] segment complete")
 
 	r.file = nil
+
+	// Notify upload module if configured
+	if OnSegmentClosed != nil {
+		// relPath: camera/YYYY-MM-DD/HH-MM-SS.ext
+		if rel, err := filepath.Rel(r.basePath, path); err == nil {
+			OnSegmentClosed(path, rel)
+		}
+	}
 }
 
 func (r *Recorder) Stop() error {

@@ -48,6 +48,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/internal/tapo"
 	"github.com/AlexxIT/go2rtc/internal/tuya"
+	"github.com/AlexxIT/go2rtc/internal/upload"
 	"github.com/AlexxIT/go2rtc/internal/v4l2"
 	"github.com/AlexxIT/go2rtc/internal/viewgroup"
 	"github.com/AlexxIT/go2rtc/internal/webrtc"
@@ -125,6 +126,7 @@ func main() {
 		{"viewgroup", viewgroup.Init},
 		{"snapshot", snapshot.Init},
 		{"notify", notify.Init},
+		{"upload", upload.Init},
 		// Helper modules
 		{"debug", debug.Init},
 		{"ngrok", ngrok.Init},
