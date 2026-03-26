@@ -70,6 +70,15 @@
             gap: 10px;
             align-items: center;
         }
+        .nav-link {
+            padding: 4px 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 14px;
+            color: #333;
+        }
+        .nav-link:hover { background: #eee; }
         .timeline {
             display: flex;
             flex-wrap: wrap;
@@ -109,6 +118,8 @@
 <main>
     <div class="controls">
         <a href="events.html">&larr; back to sessions</a>
+        <span id="nav-prev"></span>
+        <span id="nav-next"></span>
         <label><input type="checkbox" id="autorefresh" checked> auto-refresh (active only)</label>
     </div>
     <div id="session-info" class="session-info">Loading...</div>
@@ -287,11 +298,40 @@
         `;
     }
 
+    // --- Prev/Next navigation ---
+    async function loadNeighbors() {
+        if (!sessionID) return;
+        try {
+            let url = `api/sessions/neighbors?id=${encodeURIComponent(sessionID)}`;
+            if (sessionRegion) url += `&region=${encodeURIComponent(sessionRegion)}`;
+            if (params.get('camera')) url += `&camera=${encodeURIComponent(params.get('camera'))}`;
+
+            const res = await fetch(url);
+            const data = await res.json();
+
+            // Preserve current query params (region, camera, class) in nav links
+            function sessionLink(id) {
+                const p = new URLSearchParams(location.search);
+                p.set('id', id);
+                return 'session.html?' + p.toString();
+            }
+            if (data.prev) {
+                document.getElementById('nav-prev').innerHTML =
+                    `<a class="nav-link" href="${sessionLink(data.prev)}">&larr; prev</a>`;
+            }
+            if (data.next) {
+                document.getElementById('nav-next').innerHTML =
+                    `<a class="nav-link" href="${sessionLink(data.next)}">next &rarr;</a>`;
+            }
+        } catch(e) {}
+    }
+
     // --- Init ---
     if (!sessionRegion && !sessionClass && !sessionID) {
         infoDiv.innerHTML = 'Missing parameters. <a href="events.html">Go back</a>';
     } else {
         loadActiveSession();
+        loadNeighbors();
         setInterval(() => {
             if (document.getElementById('autorefresh').checked) loadActiveSession();
         }, 2000);

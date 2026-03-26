@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -93,6 +94,7 @@ func Init() {
 	api.HandleFunc("api/sessions/snapshots", apiSessionSnapshots)
 	api.HandleFunc("api/sessions/snapshot/", apiSessionSnapshotFile)
 	api.HandleFunc("api/sessions/stored", apiStoredSessions)
+	api.HandleFunc("api/sessions/neighbors", apiSessionNeighbors)
 
 	log.Debug().Msg("[events] initialized")
 }
@@ -270,6 +272,76 @@ func apiSessionSnapshotFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, fullPath)
+}
+
+// apiSessionNeighbors returns the prev/next session IDs for navigation.
+// When region is specified, only sessions matching that region are considered.
+func apiSessionNeighbors(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id parameter required", http.StatusBadRequest)
+		return
+	}
+	region := r.URL.Query().Get("region")
+	cameraFilter := r.URL.Query().Get("camera")
+
+	if SessionBasePath == "" {
+		api.ResponseJSON(w, map[string]any{"prev": nil, "next": nil})
+		return
+	}
+
+	sessDir := filepath.Join(SessionBasePath, "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		api.ResponseJSON(w, map[string]any{"prev": nil, "next": nil})
+		return
+	}
+
+	// matchesFilter checks if a session directory matches the region/camera filter.
+	// Only reads session.json when a filter is active.
+	matchesFilter := func(name string) bool {
+		if region == "" && cameraFilter == "" {
+			return true
+		}
+		stored, err := GetStoredSession(SessionBasePath, name)
+		if err != nil || stored.Session == nil {
+			return false
+		}
+		if region != "" && stored.Session.Region != region {
+			return false
+		}
+		if cameraFilter != "" && stored.Session.Camera != cameraFilter {
+			return false
+		}
+		return true
+	}
+
+	// entries are sorted by name (ascending) = chronological order
+	var prev, next *string
+	for i, entry := range entries {
+		if !entry.IsDir() || entry.Name() != id {
+			continue
+		}
+		// Look backwards for prev
+		for j := i - 1; j >= 0; j-- {
+			if entries[j].IsDir() && matchesFilter(entries[j].Name()) {
+				s := entries[j].Name()
+				prev = &s
+				break
+			}
+		}
+		// Look forwards for next
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].IsDir() && matchesFilter(entries[j].Name()) {
+				s := entries[j].Name()
+				next = &s
+				break
+			}
+		}
+		break
+	}
+
+	api.ResponseJSON(w, map[string]any{"prev": prev, "next": next})
 }
 
 // apiStoredSessions returns recently stored (completed) sessions from disk.
