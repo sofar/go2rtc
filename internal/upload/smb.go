@@ -136,7 +136,14 @@ func (b *smbBackend) List(_ context.Context, prefix string) ([]RemoteSegment, er
 	}
 
 	fullPath := path.Join(b.cfg.Path, prefix)
-	return b.listRecursive(sh, fullPath, b.cfg.Path)
+	if fullPath == "" {
+		fullPath = "."
+	}
+	basePath := b.cfg.Path
+	if basePath == "" {
+		basePath = "."
+	}
+	return b.listRecursive(sh, fullPath, basePath)
 }
 
 func (b *smbBackend) listRecursive(sh *smb2.Share, dir, basePath string) ([]RemoteSegment, error) {
@@ -150,7 +157,12 @@ func (b *smbBackend) listRecursive(sh *smb2.Share, dir, basePath string) ([]Remo
 
 	var segments []RemoteSegment
 	for _, entry := range entries {
-		fullPath := dir + "/" + entry.Name()
+		var fullPath string
+		if dir == "." {
+			fullPath = entry.Name()
+		} else {
+			fullPath = dir + "/" + entry.Name()
+		}
 		if entry.IsDir() {
 			sub, err := b.listRecursive(sh, fullPath, basePath)
 			if err != nil {
@@ -158,8 +170,13 @@ func (b *smbBackend) listRecursive(sh *smb2.Share, dir, basePath string) ([]Remo
 			}
 			segments = append(segments, sub...)
 		} else {
-			relPath := strings.TrimPrefix(fullPath, basePath)
-			relPath = strings.TrimPrefix(relPath, "/")
+			var relPath string
+			if basePath == "." {
+				relPath = fullPath
+			} else {
+				relPath = strings.TrimPrefix(fullPath, basePath)
+				relPath = strings.TrimPrefix(relPath, "/")
+			}
 			segments = append(segments, RemoteSegment{
 				Path:    relPath,
 				Size:    entry.Size(),
