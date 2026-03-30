@@ -42,6 +42,9 @@ var globalBasePath string
 // globalPattern is the configured path pattern for segment paths.
 var globalPattern *PathPattern
 
+// globalDB is the segment tracking database for retention.
+var globalDB *SegmentDB
+
 // remotePattern is the upload module's path pattern. Set by upload.Init().
 var RemotePattern *PathPattern
 
@@ -75,6 +78,15 @@ func Init() {
 	globalPattern = NewPathPattern(cfg.Mod.PathPattern)
 
 	log.Info().Str("path_pattern", globalPattern.String()).Msg("[storage] path pattern")
+
+	// Open segment tracking database
+	dbPath := filepath.Join(cfg.Mod.BasePath, "segments.db")
+	db, err := OpenSegmentDB(dbPath)
+	if err != nil {
+		log.Error().Err(err).Msg("[storage] open segment database")
+		return
+	}
+	globalDB = db
 
 	// "retention" is preferred; "default_retention" is a backward-compat alias
 	retentionStr := cfg.Mod.Retention
@@ -146,9 +158,24 @@ func Init() {
 			Msg("[storage] recording started")
 	}
 
+	// Register segments in the tracking DB when they are finalized.
+	// Chain with any existing OnSegmentClosed handler (e.g. upload).
+	prevOnClose := OnSegmentClosed
+	OnSegmentClosed = func(localPath, camera string, t time.Time, ext string) {
+		info, err := os.Stat(localPath)
+		if err == nil {
+			if err := globalDB.Insert(localPath, camera, t, info.Size()); err != nil {
+				log.Error().Err(err).Str("path", localPath).Msg("[storage] db insert")
+			}
+		}
+		if prevOnClose != nil {
+			prevOnClose(localPath, camera, t, ext)
+		}
+	}
+
 	// Start local retention cleanup
 	if !retention.IsZero() {
-		runRetention(cfg.Mod.BasePath, retention, time.Hour)
+		runRetention(cfg.Mod.BasePath, retention, time.Hour, globalDB)
 	}
 
 	api.HandleFunc("api/recordings", apiRecordings)
