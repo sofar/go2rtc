@@ -19,12 +19,43 @@ storage:
   segment_duration: 10m
   default_retention: 14d
 
+# ffmpeg:
+#   # Multi-GPU: specify which render device to use for VA-API
+#   # (required when both a discrete GPU and Intel iGPU are present)
+#   vaapi_device: /dev/dri/renderD129
+
 # inference:
 #   backend: onnx
-#   model: /var/lib/go2rtc/yolov8s.onnx
-#   sample_fps: 1
-#   confidence_threshold: 0.3
+#   model: /var/lib/go2rtc/yolov8n.onnx
+#   sample_fps: 3
+#   confidence_threshold: 0.5
 #   min_frames: 3
 #   class_threshold:
 #     person: 0.7
 #     car: 0.6
+#
+#   # Device options:
+#   #   cpu          - default ONNX Runtime CPU (no extra dependencies)
+#   #   openvino     - Intel OpenVINO CPU optimized (requires libonnxruntime_providers_openvino.so)
+#   #   openvino_gpu - Intel iGPU via OpenVINO (requires OpenCL + intel-opencl + OpenVINO GPU plugin)
+#   #
+#   # OpenVINO setup (Fedora):
+#   #   1. Install: dnf install openvino openvino-plugins intel-opencl ocl-icd
+#   #   2. Build onnxruntime with OpenVINO support (Fedora's package lacks the provider):
+#   #      git clone --depth 1 --branch v1.22.0 https://github.com/microsoft/onnxruntime.git
+#   #      # see build instructions in project documentation
+#   #   3. Copy libonnxruntime*.so to /usr/lib64/ and run ldconfig
+#   #   4. Symlink OpenVINO plugins if in a versioned directory:
+#   #      ln -s /usr/lib64/openvino-*/libopenvino_intel_gpu_plugin.so /usr/lib64/
+#   #      ln -s /usr/lib64/openvino-*/libopenvino_intel_cpu_plugin.so /usr/lib64/
+#   device: openvino_gpu
+
+# notify:
+#   ntfy:
+#     url: https://ntfy.sh/your-topic
+#     # token: tk_...
+#     # image: none|link|attach
+#     # base_url: http://192.168.1.50:1984  # required for image: link
+#   policies:
+#     - on: start
+#       regions: [driveway, front_door]
