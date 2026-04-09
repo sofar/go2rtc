@@ -53,6 +53,10 @@ func Init() {
 
 	api.HandleFunc("api/ffmpeg", apiFFmpeg)
 
+	if v, ok := cfg.Mod["vaapi_device"]; ok {
+		hardware.VaapiDevice = v
+	}
+
 	device.Init(defaults["bin"])
 	hardware.Init(defaults["bin"])
 }

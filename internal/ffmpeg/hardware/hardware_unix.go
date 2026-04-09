@@ -14,12 +14,19 @@ const (
 	ProbeRKMPPH264   = "-f lavfi -i testsrc2 -t 1 -c h264_rkmpp -f null -"
 	ProbeRKMPPH265   = "-f lavfi -i testsrc2 -t 1 -c hevc_rkmpp -f null -"
 	ProbeRKMPPJPEG   = "-f lavfi -i testsrc2 -t 1 -c mjpeg_rkmpp -f null -"
-	ProbeVAAPIH264   = "-init_hw_device vaapi -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c h264_vaapi -f null -"
-	ProbeVAAPIH265   = "-init_hw_device vaapi -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c hevc_vaapi -f null -"
-	ProbeVAAPIJPEG   = "-init_hw_device vaapi -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c mjpeg_vaapi -f null -"
 	ProbeCUDAH264    = "-init_hw_device cuda -f lavfi -i testsrc2 -t 1 -c h264_nvenc -f null -"
 	ProbeCUDAH265    = "-init_hw_device cuda -f lavfi -i testsrc2 -t 1 -c hevc_nvenc -f null -"
 )
+
+func probeVAAPIH264() string {
+	return vaapiInitDevice() + " -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c h264_vaapi -f null -"
+}
+func probeVAAPIH265() string {
+	return vaapiInitDevice() + " -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c hevc_vaapi -f null -"
+}
+func probeVAAPIJPEG() string {
+	return vaapiInitDevice() + " -f lavfi -i testsrc2 -t 1 -vf format=nv12,hwupload -c mjpeg_vaapi -f null -"
+}
 
 func ProbeAll(bin string) []*api.Source {
 	if runtime.GOARCH == "arm64" || runtime.GOARCH == "arm" {
@@ -49,15 +56,15 @@ func ProbeAll(bin string) []*api.Source {
 
 	return []*api.Source{
 		{
-			Name: runToString(bin, ProbeVAAPIH264),
+			Name: runToString(bin, probeVAAPIH264()),
 			URL:  "ffmpeg:...#video=h264#hardware=" + EngineVAAPI,
 		},
 		{
-			Name: runToString(bin, ProbeVAAPIH265),
+			Name: runToString(bin, probeVAAPIH265()),
 			URL:  "ffmpeg:...#video=h265#hardware=" + EngineVAAPI,
 		},
 		{
-			Name: runToString(bin, ProbeVAAPIJPEG),
+			Name: runToString(bin, probeVAAPIJPEG()),
 			URL:  "ffmpeg:...#video=mjpeg#hardware=" + EngineVAAPI,
 		},
 		{
@@ -102,7 +109,7 @@ func ProbeHardware(bin, name string) string {
 		if run(bin, ProbeCUDAH264) {
 			return EngineCUDA
 		}
-		if run(bin, ProbeVAAPIH264) {
+		if run(bin, probeVAAPIH264()) {
 			return EngineVAAPI
 		}
 
@@ -110,12 +117,12 @@ func ProbeHardware(bin, name string) string {
 		if run(bin, ProbeCUDAH265) {
 			return EngineCUDA
 		}
-		if run(bin, ProbeVAAPIH265) {
+		if run(bin, probeVAAPIH265()) {
 			return EngineVAAPI
 		}
 
 	case "mjpeg":
-		if run(bin, ProbeVAAPIJPEG) {
+		if run(bin, probeVAAPIJPEG()) {
 			return EngineVAAPI
 		}
 	}

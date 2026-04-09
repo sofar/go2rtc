@@ -19,10 +19,31 @@ const (
 	EngineRKMPP        = "rkmpp"        // Rockchip
 )
 
+// VaapiDevice is the render device path for VA-API (e.g. /dev/dri/renderD129).
+// When empty, ffmpeg uses its default device.
+var VaapiDevice string
+
 func Init(bin string) {
 	api.HandleFunc("api/ffmpeg/hardware", func(w http.ResponseWriter, r *http.Request) {
 		api.ResponseSources(w, ProbeAll(bin))
 	})
+}
+
+// vaapiInitDevice returns the ffmpeg -init_hw_device flag for VA-API.
+func vaapiInitDevice() string {
+	if VaapiDevice != "" {
+		return "-init_hw_device vaapi=va:" + VaapiDevice
+	}
+	return "-init_hw_device vaapi"
+}
+
+// vaapiHwaccelInput returns the hwaccel input flags for VA-API.
+func vaapiHwaccelInput(outputFormat string) string {
+	s := "-hwaccel vaapi -hwaccel_output_format " + outputFormat + " -hwaccel_flags allow_profile_mismatch"
+	if VaapiDevice != "" {
+		s = "-init_hw_device vaapi=va:" + VaapiDevice + " -hwaccel vaapi -hwaccel_device va -hwaccel_output_format " + outputFormat + " -hwaccel_flags allow_profile_mismatch"
+	}
+	return s
 }
 
 // MakeHardware converts software FFmpeg args to hardware args
@@ -58,7 +79,7 @@ func MakeHardware(args *ffmpeg.Args, engine string, defaults map[string]string) 
 			args.Codecs[i] = defaults[name+"/"+engine]
 
 			if !args.HasFilters("drawtext=") {
-				args.Input = "-hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch " + args.Input
+				args.Input = vaapiHwaccelInput("vaapi") + " " + args.Input
 
 				if name == "h264" {
 					fixPixelFormat(args)
@@ -82,7 +103,7 @@ func MakeHardware(args *ffmpeg.Args, engine string, defaults map[string]string) 
 				args.InsertFilter("format=vaapi|nv12,hwupload")
 			} else {
 				// enable software pixel for drawtext, scale and transpose
-				args.Input = "-hwaccel vaapi -hwaccel_output_format nv12 -hwaccel_flags allow_profile_mismatch " + args.Input
+				args.Input = vaapiHwaccelInput("nv12") + " " + args.Input
 
 				args.AddFilter("hwupload")
 			}
