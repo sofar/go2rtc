@@ -27,7 +27,8 @@ type Config struct {
 	SampleFPS           float64            `yaml:"sample_fps"`
 	ConfidenceThreshold float32            `yaml:"confidence_threshold"`
 	ClassThreshold      map[string]float32 `yaml:"class_threshold"`
-	MinFrames           int                `yaml:"min_frames"` // detections before session starts
+	MinFrames           int                `yaml:"min_frames"`  // detections before session starts (default 3)
+	MinArea             float32            `yaml:"min_area"`    // minimum bbox area fraction (0..1, default 0.01)
 
 	// HTTP backend config
 	URL     string `yaml:"url"`
@@ -78,6 +79,12 @@ func Init() {
 		return
 	}
 
+	device := cfg.Mod.Device
+	if device == "" {
+		device = "cpu"
+	}
+	log.Info().Str("backend", cfg.Mod.Backend).Str("device", device).Msg("[inference] backend started")
+
 	interval := time.Second / 3
 	if cfg.Mod.SampleFPS > 0 {
 		interval = time.Duration(float64(time.Second) / cfg.Mod.SampleFPS)
@@ -88,15 +95,22 @@ func Init() {
 		minConf = 0.5
 	}
 
-	// Configure session tracker min_frames
-	if cfg.Mod.MinFrames > 0 {
-		events.SetMinFrames(cfg.Mod.MinFrames)
+	minArea := cfg.Mod.MinArea
+	if minArea <= 0 {
+		minArea = 0.01 // 1% of crop area — reject noise artifacts
 	}
+
+	// Configure session tracker min_frames (default 3 to suppress transient ghosts)
+	minFrames := cfg.Mod.MinFrames
+	if minFrames <= 0 {
+		minFrames = 3
+	}
+	events.SetMinFrames(minFrames)
 
 	bus := events.Default
 
 	for _, cam := range camera.All() {
-		sampler := NewSampler(cam, backend, bus, interval, minConf, cfg.Mod.ClassThreshold)
+		sampler := NewSampler(cam, backend, bus, interval, minConf, minArea, cfg.Mod.ClassThreshold)
 		sampler.Start()
 		samplers = append(samplers, sampler)
 		log.Info().Str("camera", cam.Name).Msg("[inference] started")

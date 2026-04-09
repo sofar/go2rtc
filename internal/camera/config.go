@@ -19,8 +19,10 @@ type Camera struct {
 // Region defines a polygon area within the camera's field of view with
 // a list of object classes to detect within it.
 type Region struct {
-	Polygon [][2]int `yaml:"polygon" json:"polygon"`
-	Detect  []string `yaml:"detect" json:"detect"`
+	Polygon    [][2]int `yaml:"polygon" json:"polygon"`
+	Detect     []string `yaml:"detect" json:"detect"`
+	Confidence float32  `yaml:"confidence,omitempty" json:"confidence,omitempty"` // override global threshold
+	MinArea    float32  `yaml:"min_area,omitempty" json:"min_area,omitempty"`     // minimum bbox area as fraction of crop (0..1)
 }
 
 // RecordingConfig controls segmented recording for a camera.

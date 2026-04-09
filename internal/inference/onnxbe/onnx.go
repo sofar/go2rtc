@@ -90,13 +90,19 @@ func New(modelPath string, device string, nmsThreshold float32, inputSize int) (
 	}
 	defer opts.Destroy()
 
-	// Try to append OpenVINO provider if requested
-	if device == "openvino" {
-		err := opts.AppendExecutionProviderOpenVINO(map[string]string{
+	// Try to append OpenVINO provider if requested.
+	// Supported values: "openvino" or "openvino_cpu" (CPU), "openvino_gpu" (Intel iGPU).
+	// CPU variants fall back silently if the OpenVINO bridge library isn't available.
+	switch device {
+	case "openvino", "openvino_cpu":
+		_ = opts.AppendExecutionProviderOpenVINO(map[string]string{
 			"device_type": "CPU",
 		})
-		if err != nil {
-			_ = err
+	case "openvino_gpu":
+		if err := opts.AppendExecutionProviderOpenVINO(map[string]string{
+			"device_type": "GPU",
+		}); err != nil {
+			return nil, fmt.Errorf("onnxbe: openvino GPU: %w", err)
 		}
 	}
 

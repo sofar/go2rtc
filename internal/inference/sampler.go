@@ -2,8 +2,6 @@ package inference
 
 import (
 	"bytes"
-	"image"
-	"image/draw"
 	"image/jpeg"
 	"sync"
 	"time"
@@ -29,6 +27,7 @@ type Sampler struct {
 	backend        Backend
 	bus            *events.Bus
 	minConf        float32
+	minArea        float32
 	classThreshold map[string]float32
 	interval       time.Duration
 
@@ -38,16 +37,35 @@ type Sampler struct {
 	lastCodec   string
 	lastFrameAt time.Time
 
+	// Continuous background suppression: tracks detections that have been
+	// present at the same location for many consecutive frames. Once a
+	// detection reaches bgStaleFrames it's considered static background
+	// (shadow, texture, etc.) and is suppressed. It's released when it
+	// disappears for bgAbsentFrames consecutive frames.
+	bgTrackers []bgTracker
+
 	stop chan struct{}
 }
 
+// bgTracker tracks a single persistent detection across frames.
+type bgTracker struct {
+	class   string
+	bbox    [4]float32 // running average bbox
+	present int        // consecutive frames present
+	absent  int        // consecutive frames absent
+	stale   bool       // suppressed as background
+}
+
 // NewSampler creates a sampler for a camera.
-func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval time.Duration, minConf float32, classThreshold map[string]float32) *Sampler {
+func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval time.Duration, minConf, minArea float32, classThreshold map[string]float32) *Sampler {
 	if interval <= 0 {
 		interval = time.Second / 3
 	}
 	if minConf <= 0 {
 		minConf = 0.5
+	}
+	if minArea <= 0 {
+		minArea = 0.01
 	}
 	return &Sampler{
 		Connection: core.Connection{
@@ -69,6 +87,7 @@ func NewSampler(cam *camera.Camera, backend Backend, bus *events.Bus, interval t
 		backend:        backend,
 		bus:            bus,
 		minConf:        minConf,
+		minArea:        minArea,
 		classThreshold: classThreshold,
 		interval:       interval,
 		stop:           make(chan struct{}),
@@ -210,11 +229,15 @@ func (s *Sampler) sample() {
 }
 
 func (s *Sampler) sampleFullFrame(jpegData []byte) {
+	t0 := time.Now()
 	detections, err := s.backend.Detect(jpegData)
 	if err != nil {
 		log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] detect")
 		return
 	}
+	log.Trace().Str("camera", s.camera).Dur("ms", time.Since(t0)).Int("detections", len(detections)).Msg("[inference] detect")
+
+	s.bgUpdate(detections)
 
 	filtered := s.filterByConfidence(detections)
 	if len(filtered) > 0 {
@@ -223,8 +246,22 @@ func (s *Sampler) sampleFullFrame(jpegData []byte) {
 }
 
 func (s *Sampler) sampleRegions(fullJPEG []byte) {
-	img, err := jpeg.Decode(bytes.NewReader(fullJPEG))
+	// Run detection on the FULL frame once, then assign detections to
+	// regions by checking if the bbox center falls inside each polygon.
+	// This avoids cropping small regions and upscaling them to 640x640,
+	// which causes YOLO to hallucinate objects from texture artifacts.
+	t0 := time.Now()
+	detections, err := s.backend.Detect(fullJPEG)
 	if err != nil {
+		log.Debug().Err(err).Str("camera", s.camera).Msg("[inference] detect")
+		return
+	}
+	log.Trace().Str("camera", s.camera).Dur("ms", time.Since(t0)).Int("detections", len(detections)).Msg("[inference] detect")
+
+	s.bgUpdate(detections)
+
+	imgW, imgH := jpegDimensions(fullJPEG)
+	if imgW == 0 || imgH == 0 {
 		return
 	}
 
@@ -233,33 +270,32 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 			continue
 		}
 
-		bounds := polygonBounds(region.Polygon)
-		cropped := cropImage(img, bounds)
-		if cropped == nil {
-			continue
+		// Per-region confidence and min_area override globals
+		regionConf := s.minConf
+		if region.Confidence > 0 {
+			regionConf = region.Confidence
 		}
-
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, cropped, &jpeg.Options{Quality: 85}); err != nil {
-			continue
-		}
-		cropJPEG := buf.Bytes()
-
-		detections, err := s.backend.Detect(cropJPEG)
-		if err != nil {
-			log.Debug().Err(err).Str("camera", s.camera).Str("region", regionName).Msg("[inference] detect")
-			continue
+		regionMinArea := s.minArea
+		if region.MinArea > 0 {
+			regionMinArea = region.MinArea
 		}
 
 		var regionDets []Detection
 		for _, d := range detections {
-			threshold := s.minConf
+			threshold := regionConf
 			if ct, ok := s.classThreshold[d.Class]; ok {
 				threshold = ct
 			}
 			if d.Confidence < threshold {
 				continue
 			}
+
+			// Reject tiny detections (noise).
+			bboxArea := (d.BBox[2] - d.BBox[0]) * (d.BBox[3] - d.BBox[1])
+			if bboxArea < regionMinArea {
+				continue
+			}
+
 			classMatch := false
 			for _, cls := range region.Detect {
 				if cls == d.Class {
@@ -271,9 +307,18 @@ func (s *Sampler) sampleRegions(fullJPEG []byte) {
 				continue
 			}
 
-			imgW := img.Bounds().Dx()
-			imgH := img.Bounds().Dy()
-			d.BBox = remapBBox(d.BBox, bounds, imgW, imgH)
+			// Check that the detection center falls inside the polygon.
+			centerX := float64(d.BBox[0]+d.BBox[2]) / 2 * float64(imgW)
+			centerY := float64(d.BBox[1]+d.BBox[3]) / 2 * float64(imgH)
+			if !pointInPolygon(centerX, centerY, region.Polygon) {
+				continue
+			}
+
+			// Suppress learned background detections.
+			if s.isBackground(d) {
+				continue
+			}
+
 			regionDets = append(regionDets, d)
 		}
 
@@ -290,9 +335,17 @@ func (s *Sampler) filterByConfidence(detections []Detection) []Detection {
 		if ct, ok := s.classThreshold[d.Class]; ok {
 			threshold = ct
 		}
-		if d.Confidence >= threshold {
-			filtered = append(filtered, d)
+		if d.Confidence < threshold {
+			continue
 		}
+		bboxArea := (d.BBox[2] - d.BBox[0]) * (d.BBox[3] - d.BBox[1])
+		if bboxArea < s.minArea {
+			continue
+		}
+		if s.isBackground(d) {
+			continue
+		}
+		filtered = append(filtered, d)
 	}
 	return filtered
 }
@@ -329,57 +382,136 @@ type DetectionEvent struct {
 	FrameJPEG  []byte      `json:"-"`
 }
 
+// --- continuous background suppression ---
+
+const (
+	bgStaleFrames  = 90  // frames present before considered background (~30s at 3fps)
+	bgAbsentFrames = 15  // frames absent before tracker is released (~5s at 3fps)
+	bgMatchIoU     = 0.5 // IoU threshold to match a detection to a tracker
+)
+
+// bgUpdate updates background trackers with the current frame's detections.
+// Must be called once per frame with ALL detections (before filtering).
+func (s *Sampler) bgUpdate(detections []Detection) {
+	// Mark existing trackers as not-seen this frame
+	existingCount := len(s.bgTrackers)
+	matched := make([]bool, existingCount)
+
+	for _, d := range detections {
+		bestIdx := -1
+		bestIoU := float32(0)
+		// Only match against existing trackers, not newly added ones
+		for i := 0; i < existingCount; i++ {
+			if s.bgTrackers[i].class != d.Class {
+				continue
+			}
+			v := bboxIoU(d.BBox, s.bgTrackers[i].bbox)
+			if v > bestIoU {
+				bestIoU = v
+				bestIdx = i
+			}
+		}
+
+		if bestIdx >= 0 && bestIoU > bgMatchIoU {
+			// Update existing tracker with exponential moving average
+			tr := &s.bgTrackers[bestIdx]
+			const alpha = 0.1
+			for k := 0; k < 4; k++ {
+				tr.bbox[k] = tr.bbox[k]*(1-alpha) + d.BBox[k]*alpha
+			}
+			tr.present++
+			tr.absent = 0
+			matched[bestIdx] = true
+
+			if !tr.stale && tr.present >= bgStaleFrames {
+				tr.stale = true
+				log.Info().
+					Str("camera", s.camera).
+					Str("class", tr.class).
+					Int("frames", tr.present).
+					Msg("[inference] static detection suppressed")
+			}
+		} else {
+			// New tracker
+			s.bgTrackers = append(s.bgTrackers, bgTracker{
+				class:   d.Class,
+				bbox:    d.BBox,
+				present: 1,
+			})
+		}
+	}
+
+	// Increment absent count for unmatched trackers, remove dead ones
+	alive := make([]bgTracker, 0, len(s.bgTrackers))
+	for i := range s.bgTrackers {
+		if i < existingCount && !matched[i] {
+			s.bgTrackers[i].absent++
+		}
+		if s.bgTrackers[i].absent < bgAbsentFrames {
+			alive = append(alive, s.bgTrackers[i])
+		} else if s.bgTrackers[i].stale {
+			log.Info().
+				Str("camera", s.camera).
+				Str("class", s.bgTrackers[i].class).
+				Msg("[inference] static detection released")
+		}
+	}
+	s.bgTrackers = alive
+}
+
+// isBackground checks if a detection matches a stale background tracker.
+func (s *Sampler) isBackground(d Detection) bool {
+	for i := range s.bgTrackers {
+		if !s.bgTrackers[i].stale {
+			continue
+		}
+		if d.Class != s.bgTrackers[i].class {
+			continue
+		}
+		if bboxIoU(d.BBox, s.bgTrackers[i].bbox) > bgMatchIoU {
+			return true
+		}
+	}
+	return false
+}
+
+// bboxIoU computes intersection-over-union for two normalized bboxes.
+func bboxIoU(a, b [4]float32) float32 {
+	ix1 := max32(a[0], b[0])
+	iy1 := max32(a[1], b[1])
+	ix2 := min32(a[2], b[2])
+	iy2 := min32(a[3], b[3])
+
+	iw := max32(0, ix2-ix1)
+	ih := max32(0, iy2-iy1)
+	inter := iw * ih
+
+	areaA := (a[2] - a[0]) * (a[3] - a[1])
+	areaB := (b[2] - b[0]) * (b[3] - b[1])
+	union := areaA + areaB - inter
+	if union <= 0 {
+		return 0
+	}
+	return inter / union
+}
+
+func max32(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min32(a, b float32) float32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // --- geometry helpers ---
 
-func polygonBounds(polygon [][2]int) image.Rectangle {
-	if len(polygon) == 0 {
-		return image.Rectangle{}
-	}
-	minX, minY := polygon[0][0], polygon[0][1]
-	maxX, maxY := minX, minY
-	for _, p := range polygon[1:] {
-		if p[0] < minX { minX = p[0] }
-		if p[0] > maxX { maxX = p[0] }
-		if p[1] < minY { minY = p[1] }
-		if p[1] > maxY { maxY = p[1] }
-	}
-	return image.Rect(minX, minY, maxX, maxY)
-}
 
-func cropImage(img image.Image, bounds image.Rectangle) image.Image {
-	imgBounds := img.Bounds()
-	bounds = bounds.Intersect(imgBounds)
-	if bounds.Empty() || bounds.Dx() < 10 || bounds.Dy() < 10 {
-		return nil
-	}
-
-	type subImager interface {
-		SubImage(r image.Rectangle) image.Image
-	}
-	if si, ok := img.(subImager); ok {
-		return si.SubImage(bounds)
-	}
-
-	dst := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
-	draw.Draw(dst, dst.Bounds(), img, bounds.Min, draw.Src)
-	return dst
-}
-
-func remapBBox(bbox [4]float32, cropBounds image.Rectangle, imgW, imgH int) [4]float32 {
-	cx := float64(cropBounds.Min.X)
-	cy := float64(cropBounds.Min.Y)
-	cw := float64(cropBounds.Dx())
-	ch := float64(cropBounds.Dy())
-	fw := float64(imgW)
-	fh := float64(imgH)
-
-	return [4]float32{
-		float32((cx + float64(bbox[0])*cw) / fw),
-		float32((cy + float64(bbox[1])*ch) / fh),
-		float32((cx + float64(bbox[2])*cw) / fw),
-		float32((cy + float64(bbox[3])*ch) / fh),
-	}
-}
 
 func pointInPolygon(px, py float64, polygon [][2]int) bool {
 	n := len(polygon)
