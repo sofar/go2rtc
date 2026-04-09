@@ -380,9 +380,16 @@ func listRemoteSegments(cameraName string, from, to time.Time) []Segment {
 	// Use the remote pattern to determine the listing prefix.
 	// We list from the root and filter by camera using the pattern parser.
 	remoteSegs, err := RemoteList(ctx, "")
-	if err != nil || len(remoteSegs) == 0 {
+	if err != nil {
+		log.Debug().Err(err).Msg("[storage] remote list failed")
 		return nil
 	}
+	if len(remoteSegs) == 0 {
+		log.Debug().Msg("[storage] remote list returned 0 segments")
+		return nil
+	}
+
+	log.Debug().Int("total", len(remoteSegs)).Str("camera", cameraName).Msg("[storage] remote list")
 
 	var segments []Segment
 	for _, rs := range remoteSegs {

@@ -163,8 +163,12 @@ func Init() {
 		go worker(name, b)
 	}
 
-	// Hook recording segment uploads
+	// Hook recording segment uploads — chain with existing handler (DB tracking)
+	prevOnClose := storage.OnSegmentClosed
 	storage.OnSegmentClosed = func(localPath, camera string, t time.Time, ext string) {
+		if prevOnClose != nil {
+			prevOnClose(localPath, camera, t, ext)
+		}
 		remotePath := remotePattern.Format(camera, t) + ext
 		enqueueFile(localPath, remotePath)
 	}
@@ -363,10 +367,18 @@ func enforceRemoteRetention(policy storage.RetentionPolicy) {
 
 	removed := 0
 
+	// Filter to only recording segments (skip session snapshots and other files)
+	var recordings []RemoteSegment
+	for _, seg := range segments {
+		if _, _, ok := remotePattern.Parse(seg.Path); ok {
+			recordings = append(recordings, seg)
+		}
+	}
+
 	// Age-based cleanup
 	if policy.MaxAge > 0 {
 		cutoff := time.Now().Add(-policy.MaxAge)
-		for _, seg := range segments {
+		for _, seg := range recordings {
 			if seg.ModTime.Before(cutoff) {
 				if deleteRemoteFile(b, seg.Path) {
 					removed++
@@ -378,15 +390,15 @@ func enforceRemoteRetention(policy storage.RetentionPolicy) {
 	// Size-based cleanup: delete oldest until under limit
 	if policy.MaxSize > 0 {
 		var totalSize int64
-		for _, seg := range segments {
+		for _, seg := range recordings {
 			totalSize += seg.Size
 		}
 		if totalSize > policy.MaxSize {
 			// Sort oldest first
-			sort.Slice(segments, func(i, j int) bool {
-				return segments[i].ModTime.Before(segments[j].ModTime)
+			sort.Slice(recordings, func(i, j int) bool {
+				return recordings[i].ModTime.Before(recordings[j].ModTime)
 			})
-			for _, seg := range segments {
+			for _, seg := range recordings {
 				if totalSize <= policy.MaxSize {
 					break
 				}
