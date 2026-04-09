@@ -38,6 +38,15 @@ func RegisterSnapshotCapture(fn SnapshotCaptureFunc) {
 	snapshotCapture = fn
 }
 
+// CaptureSnapshot grabs an annotated JPEG for a camera/region using
+// the registered capture function. Returns nil if not available.
+func CaptureSnapshot(camera, region string) []byte {
+	if snapshotCapture == nil {
+		return nil
+	}
+	return snapshotCapture(camera, region)
+}
+
 const maxSnapshotsPerSession = 50
 
 type sessionSnaps struct {

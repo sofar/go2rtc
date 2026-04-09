@@ -16,6 +16,7 @@ package notify
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -41,15 +42,15 @@ type Backend interface {
 
 // Notification is the payload sent to backends.
 type Notification struct {
-	Title    string            `json:"title"`
-	Message  string            `json:"message"`
-	Priority string            `json:"priority,omitempty"`
-	Tags     []string          `json:"tags,omitempty"`
-	Camera   string            `json:"camera"`
-	Region   string            `json:"region"`
-	Class    string            `json:"class"`
-	Event    string            `json:"event"` // session_start, session_end
-	Session  *events.Session   `json:"session,omitempty"`
+	Title    string          `json:"title"`
+	Message  string          `json:"message"`
+	Priority string          `json:"priority,omitempty"`
+	Tags     []string        `json:"tags,omitempty"`
+	Camera   string          `json:"camera"`
+	Region   string          `json:"region"`
+	Class    string          `json:"class"`
+	Event    string          `json:"event"` // session_start, session_end
+	Session  *events.Session `json:"session,omitempty"`
 }
 
 var (
@@ -142,7 +143,7 @@ func eventName(t string) string {
 func sessionNotification(sess *events.Session, event string) Notification {
 	cameras := sess.Camera
 	if len(sess.Cameras) > 1 {
-		cameras = fmt.Sprintf("%v", sess.Cameras)
+		cameras = strings.Join(sess.Cameras, ", ")
 	}
 
 	var title, message, priority string
@@ -151,27 +152,28 @@ func sessionNotification(sess *events.Session, event string) Notification {
 	switch event {
 	case "start":
 		title = fmt.Sprintf("%s detected in %s", sess.Class, sess.Region)
-		message = fmt.Sprintf("Camera: %s\nConfidence: %.0f%%", cameras, sess.PeakConfidence*100)
+		ts := time.Now().Format("3:04pm")
+		message = fmt.Sprintf("%s in %s on %s at %s", sess.Class, sess.Region, cameras, ts)
 		priority = "default"
 		tags = []string{classEmoji(sess.Class), sess.Class}
 	case "end":
 		dur := formatDuration(sess.Duration)
+		ts := time.Now().Format("3:04pm")
 		title = fmt.Sprintf("%s left %s", sess.Class, sess.Region)
-		message = fmt.Sprintf("Duration: %s\nCamera: %s\nDetections: %d\nPeak: %.0f%%",
-			dur, cameras, sess.DetectionCount, sess.PeakConfidence*100)
+		message = fmt.Sprintf("%s in %s on %s at %s\nDuration: %s", sess.Class, sess.Region, cameras, ts, dur)
 		priority = "low"
 		tags = []string{sess.Class}
 	}
 
 	return Notification{
-		Title:    title,
-		Message:  message,
-		Priority: priority,
-		Tags:     tags,
-		Camera:   sess.Camera,
-		Region:   sess.Region,
-		Class:    sess.Class,
-		Event:    "session_" + event,
+		Title:       title,
+		Message:     message,
+		Priority:    priority,
+		Tags:        tags,
+		Camera:      sess.Camera,
+		Region:      sess.Region,
+		Class:       sess.Class,
+		Event:       "session_" + event,
 		Session:  sess,
 	}
 }
